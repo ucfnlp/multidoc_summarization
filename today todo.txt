@@ -1,0 +1,173 @@
+fix train_generator flag so that it's actually just straight cnn discrimination
+	then try as just discriminator (meaining including source loss)
+
+
+computing Bleu score...
+{'reflen': 387184, 'guess': [391726, 351222, 310718, 270214], 'testlen': 391726, 'correct': [237823, 100143, 37191, 13957]}
+ratio: 1.01173085665
+Bleu_1: 0.607
+Bleu_2: 0.416
+Bleu_3: 0.275
+Bleu_4: 0.181
+(models with nothing)
+
+Soft attention: 70.7	49.2	34.4	24.3	23.90
+
+models with nothing -- nohup.out
+models with lstm fc feats... -- nohupa.out
+
+also, I should keep all the captions even if there aren't segmentations. I can just make their masks all 0s.
+unks are included in captions, not good. maybe use mask to remove unks
+[u'an', u'older', u'fighter', u'plan', u'sitting', u'next', ...   fighter gets caught as a match, bad. maybe do POS tags and only take Nouns
+'home plate' and 'baseball glove' match, with a dist of 3. both are from 'baseball equipment'
+maybe use better heuristic for matching. different similarity metric?
+
+
+
+multi document summarization
+Fei: attention GT obtained word alignment
+	sounds kinda iffy. there will likely be many occurrences of the GT word,
+	and aligning to every instance of that word is not a good representation of how a human would attend to the doc
+
+	but if we did do it, we'd definitely not include stopwords, right?
+crowd-sourcing? probably not, that's difficult for the workers. Or maybe just hire a few people/students to do it.
+hierarchical attention?
+mechanism to avoid redundancy
+if 4-sentence summary, make a 4-length vector, one for each sentence of the output
+	or a 5-10 length vector, one to capture each of the aspects for TAC (what, who, where, when...)
+	maybe use the annotations given for aspects too? is that allowed?
+		similar to time-contrastive networks, where we learn embeddings for each aspect
+	coverage based on aspect, not on individual words
+looks like there's a problem with the coverage mechanism. While training, you'll often output a word too early, and then have to output it later.
+	this is a problem because the coverage mechanism tracks this and makes it so you don't want to pay attention to the same word twice.
+	this is actually a problem i've had with classic LMs too, but not as bad
+	the way they counteracted this was by adding the coverage loss AFTER training the original model. this makes sense but not ideal i guess.
+their pointer generator is really too extractive. need some way to encourage abstractive behavior more.
+	maybe train on some dataset for summarization of phrases (won against --> beat). or thesaurus or distance embedding
+		ppdb
+
+saliency step? to find which sentences/documents are most important. then determine what to attend to, based on saliency and coverage
+	then we can see what parts the network found to be important
+	like, quotes are usually not important, and the first sentence is likely to be important but not always
+coverage based on sentence?
+	how do we determine what has been covered already? it can be based on attention I guess
+	or based on similarity between generated sentence and document sentences
+need a good sentence representation
+	maybe pretrain something with contrastive loss?
+	each sentence should be different from those in other sentences in the same document
+	but what to be close to?
+		maybe compare to a perturbed version of the sentence
+		or find some paraphrasing dataset
+			then use triplet loss. paraphrases should be close, but not to random sentence (or to sentence with some words swapped?)
+		msrp corpus (news paraphrase dataset)
+	a problem is that we don't really want it to just be the presence or absence of certain words
+		we want it to be more about the action, what this person DID
+
+Sentence-feature network -- train on MSRP with triplet loss [produces f(S_orig)]
+Salinecy -- fully connected layer: f(S_orig) --> softmax saliency distribution over all sentences in multidoc
+	(saliency acts as a weight for coverage)
+Encoder network
+	Regular LSTM
+Decoder network
+	Coverage -- f(S_orig) *dot-product* f(S_dec) --> softmax coverage distribution over all sentences in multidoc
+		then as a weighted sum of saliencies
+	Attention -- similar to that of Stanford paper
+base on clauses not sentences
+	
+
+
+train i think?		
+python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=myexperiment  --coverage
+
+cnndailymail test
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=cnn_dm --single_pass --coverage --max_dec_steps=120
+
+cnndailymail test SC
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=cnn_dm_coverage --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_beta
+
+cnndailymail test SI
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=cnn_dm_importance --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_importance --logan_beta
+
+cnndailymail test SC+SI
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=cnn_dm_beta --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_importance --logan_beta
+
+Tac test
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/logans_test/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=pretrained_model --single_pass --coverage
+
+TAC 2011 NEW clustering test
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/20180314_TAC_2011_clustering/tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_clustering --single_pass --coverage --max_enc_steps=10000
+
+TAC all
+
+
+TAC 2011 test, full article
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011 --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120
+
+TAC 2011 test, full article, logan_coverage
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_coverage --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_beta
+
+TAC 2011 test, full article, logan_importance
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_importance --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_importance --logan_beta
+
+TAC 2011 test, full article, logan_coverage and logan_importance
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_beta --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_importance --logan_beta
+
+DUC 2004 NEW clustering test
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/20180314_DUC_2004_clustering/tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004_clustering --single_pass --coverage --max_enc_steps=10000
+
+DUC 2004 NEW test, full article
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/DUC/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004 --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120
+
+DUC 2004 NEW test, full article, logan_coverage
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/DUC/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004_coverage --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_beta
+
+DUC 2004 NEW test, full article, logan_importance
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/DUC/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004_importance --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_importance --logan_beta
+
+DUC 2004 NEW test, full article, logan_coverage and logan_importance
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/DUC/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004_beta --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_importance --logan_beta
+
+TAC 2011 cmd
+pyrouge_evaluate_plain_text_files -s decoded/ -sfp "(\d+)_decoded.txt" -m reference/ -mfp "#ID#_reference.[A-Z].txt" -rargs "-e /home/logan/ROUGE/RELEASE-1.5.5/data -c 95 -2 4 -U -r 1000 -n 4 -w 1.2 -a -l 100"
+
+TAC 2011 cmd individual docs
+pyrouge_evaluate_plain_text_files -s decoded/ -sfp "(\d+)_decoded.txt" -m reference/ -mfp "#ID#_reference.[A-Z].txt" -rargs "-e /home/logan/ROUGE/RELEASE-1.5.5/data -c 95 -2 4 -U -r 1000 -n 4 -w 1.2 -a -l 100" | grep -i -e "rouge-1.*average_f" -e "rouge-2.*average_f" -e "rouge-su4.*average_f"
+
+
+UPitt
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/NN/tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=upitt --single_pass --coverage --max_enc_steps=10000 --upitt
+
+
+
+
+TAC 2011 test, full article, logan_coverage (bigrams)
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_coverage --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_beta --bigrams
+
+
+need to change sentence embeddings from sum to average
+probably going to need to change model to use a dynamic_rnn
+	current static_rnn takes in only 400 words from the source, which is about 17 sentences (each source is 50 sentences)
+crap, the groundtruth abstracts seem to be usually 2-3 sentences
+	we can't just change a hyperparameter to fix this, it's dependent on when it outputs the [End of summary] symbol
+
+maybe instead of just adding up word embeddings for each sentence,
+	i should do a pairwise comparison of each word embedding
+	also doing a dot product can result in negative values, so I should clip at 0 to keep them from harming similarity
+	if i do that, maybe the coverage can be word-level/clause-level
+
+
+
+
+
+
+
+do unigram/bigram similarity? or tfidf similarity?
+maybe figure out the tau necessary to get a certain standard deviation over importance or coverage?
+
+
+
+
+
+
+
+
