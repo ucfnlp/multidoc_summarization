@@ -82,6 +82,9 @@ class BeamSearchDecoder(object):
             # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
             # print("Results_dict: ", results_dict)
             batch = self._batcher.next_batch()	# 1 example repeated across batch
+            # if counter != 21:
+            #     counter += 1
+            #     continue
             if batch is None: # finished decoding dataset in single_pass mode
                 assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
                 tf.logging.info("Decoder has finished reading dataset for single_pass.")
@@ -107,7 +110,7 @@ class BeamSearchDecoder(object):
                 doc_name = all_original_abstract_sents[1][0]
 
             # Run beam search to get best Hypothesis
-            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, specific_max_dec_steps=specific_max_dec_steps)
+            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, counter, specific_max_dec_steps=specific_max_dec_steps)
 
             # Extract the output ids from the hypothesis and convert back to words
             output_ids = [int(t) for t in best_hyp.tokens[1:]]

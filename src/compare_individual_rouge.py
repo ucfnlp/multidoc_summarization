@@ -2,6 +2,9 @@ import os
 import numpy as np
 import pyrouge
 import logging
+import tensorflow as tf
+
+FLAGS = tf.app.flags.FLAGS
 
 class bcolors:
     HEADER = '\033[95m'
@@ -13,9 +16,18 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-rouge_logan_dec_dir = '/home/logan/data/multidoc_summarization/logs/tac_2011_logan/decode_test_10000maxenc_4beam_35mindec_100maxdec_ckpt-238410/decoded'
+log_dir = '/home/logan/data/multidoc_summarization/logs/'
+max_enc_steps = 100000
+min_dec_steps = 100
+max_dec_steps = 120
+
+rouge_logan_dec_dir = '/home/logan/data/multidoc_summarization/logs/scratch/decode_test_100000maxenc_4beam_70mindec_100maxdec_ckpt-238410/decoded'
 rouge_orig_dec_dir = '/home/logan/data/multidoc_summarization/logs/tac_2011/decode_test_10000maxenc_4beam_35mindec_100maxdec_ckpt-238410/decoded'
-rouge_ref_dir = '/home/logan/data/multidoc_summarization/logs/tac_2011_logan/decode_test_10000maxenc_4beam_35mindec_100maxdec_ckpt-238410/reference'
+
+tf.app.flags.DEFINE_string('candidate_exp_name', rouge_logan_dec_dir, 'Path to system-generated summaries that we want to evaluate.')
+tf.app.flags.DEFINE_string('original_exp_name', rouge_orig_dec_dir, 'Path to system-generated summaries by a system we are comparing to.')
+
+
 
 def rouge_eval_individual(ref_dir, dec_dir, id):
     """Evaluate the files in ref_dir and dec_dir with pyrouge, returning results_dict"""
@@ -50,8 +62,8 @@ def rouge_all_docs(rouge_ref_dir, rouge_dec_dir):
         all_results_dict[doc_idx] = ind_results_dict
     return all_results_dict
 
-def print_colored_scores(logan_results_dict, orig_results_dict):
-    docs = os.listdir(rouge_logan_dec_dir)
+def print_colored_scores(logan_results_dict, orig_results_dict, candidate_dec_dir):
+    docs = os.listdir(candidate_dec_dir)
     for doc_idx in range(len(docs)):
         logan_dict = logan_results_dict[doc_idx]
         orig_dict = orig_results_dict[doc_idx]
@@ -75,15 +87,26 @@ def print_colored_scores(logan_results_dict, orig_results_dict):
             out_str += "\n"
         print out_str
 
+def main(unused_argv):
+    if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
+        raise Exception("Problem with flags: %s" % unused_argv)
+    candidate_dec_dir = log_dir + FLAGS.candidate_exp_name + '/decode_test_' + str(max_enc_steps) + \
+                        'maxenc_4beam_' + str(min_dec_steps) + 'mindec_' + str(max_dec_steps) + 'maxdec_ckpt-238410/decoded'
+    original_dec_dir = log_dir + FLAGS.original_exp_name + '/decode_test_' + str(max_enc_steps) + \
+                        'maxenc_4beam_' + str(min_dec_steps) + 'mindec_' + str(max_dec_steps) + 'maxdec_ckpt-238410/decoded'
+    original_dir = original_dec_dir.split('/')
+    original_dir[-1] = 'reference'
+    rouge_ref_dir = '/'.join(original_dir)
+    logan_results_dict = rouge_all_docs(rouge_ref_dir, candidate_dec_dir)
+    orig_results_dict = rouge_all_docs(rouge_ref_dir, original_dec_dir)
+    print_colored_scores(logan_results_dict, orig_results_dict, candidate_dec_dir)
 
-logan_results_dict = rouge_all_docs(rouge_ref_dir, rouge_logan_dec_dir)
-orig_results_dict = rouge_all_docs(rouge_ref_dir, rouge_orig_dec_dir)
-print_colored_scores(logan_results_dict, orig_results_dict)
 
 
 
 
-
+if __name__ == '__main__':
+    tf.app.run()
 
 
 

@@ -76,8 +76,38 @@ base on clauses not sentences
 	
 
 
-train i think?		
-python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=myexperiment  --coverage
+train CNNDM from scratch		
+----------------------------------------
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --max_enc_steps=100 --max_dec_steps=60 --num_iterations=60000
+
+6 hours?
+started apr 10 5pm
+finished apr 10 11pm
+
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=200 --max_dec_steps=80 --num_iterations=120000
+
+finished apr 11 4pm
+
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=300 --max_dec_steps=90mistake --num_iterations=180000
+
+finished apr 12 7am
+
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=400 --max_dec_steps=120 --num_iterations=240000
+
+finished apr 12 11pm
+
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=400 --max_dec_steps=120 --num_iterations=243000 --convert_to_coverage_model --coverage
+
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=400 --max_dec_steps=120 --num_iterations=243000 --coverage
+
+
+eval
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=eval --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/val_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=100 --max_dec_steps=60 --num_iterations=-1
+
+test
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --single_pass --coverage --max_enc_steps=400 --max_dec_steps=120 --num_iterations=-1
+
+----------------------------------------
 
 cnndailymail test
 CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/test_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=cnn_dm --single_pass --coverage --max_dec_steps=120
@@ -110,7 +140,7 @@ TAC 2011 test, full article, logan_importance
 CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_importance --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_importance --logan_beta
 
 TAC 2011 test, full article, logan_coverage and logan_importance
-CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_beta --single_pass --coverage --max_enc_steps=100000 --max_dec_steps=120 --logan_coverage --logan_importance --logan_beta
+CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=tac_2011_beta --single_pass --coverage --max_enc_steps=100000 --min_dec_steps=70 --max_dec_steps=100 --logan_coverage --logan_importance --logan_beta
 
 DUC 2004 NEW clustering test
 CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --data_path=/home/logan/data/multidoc_summarization/20180314_DUC_2004_clustering/tf_examples/test/* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=duc_2004_clustering --single_pass --coverage --max_enc_steps=10000
@@ -163,7 +193,6 @@ maybe instead of just adding up word embeddings for each sentence,
 
 do unigram/bigram similarity? or tfidf similarity?
 maybe figure out the tau necessary to get a certain standard deviation over importance or coverage?
-
 
 
 

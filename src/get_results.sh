@@ -1,7 +1,11 @@
 #!/bin/bash
-LOG_DIR=$1
+EXP_NAME=$1
 OPTIONAL_EXP_NAME=${2:-}
-cat /home/logan/data/multidoc_summarization/logs/"$LOG_DIR"/decode_test_100000maxenc_4beam_35mindec_120maxdec_ckpt-238410/sheets_results.txt
-cat /home/logan/data/multidoc_summarization/logs/"$LOG_DIR"_coverage"$OPTIONAL_EXP_NAME"/decode_test_100000maxenc_4beam_35mindec_120maxdec_ckpt-238410/sheets_results.txt
-cat /home/logan/data/multidoc_summarization/logs/"$LOG_DIR"_importance"$OPTIONAL_EXP_NAME"/decode_test_100000maxenc_4beam_35mindec_120maxdec_ckpt-238410/sheets_results.txt
-cat /home/logan/data/multidoc_summarization/logs/"$LOG_DIR"_beta"$OPTIONAL_EXP_NAME"/decode_test_100000maxenc_4beam_35mindec_120maxdec_ckpt-238410/sheets_results.txt
+LOG_ROOT="/home/logan/data/multidoc_summarization/logs"
+MAX_ENC_STEPS=100000
+MIN_DEC_STEPS=70
+MAX_DEC_STEPS=100
+cat "$LOG_ROOT"/"$EXP_NAME"/decode_test_"$MAX_ENC_STEPS"maxenc_4beam_"$MIN_DEC_STEPS"mindec_"$MAX_DEC_STEPS"maxdec_ckpt-238410/sheets_results.txt
+cat "$LOG_ROOT"/"$EXP_NAME"_coverage"$OPTIONAL_EXP_NAME"/decode_test_"$MAX_ENC_STEPS"maxenc_4beam_"$MIN_DEC_STEPS"mindec_"$MAX_DEC_STEPS"maxdec_ckpt-238410/sheets_results.txt
+cat "$LOG_ROOT"/"$EXP_NAME"_importance"$OPTIONAL_EXP_NAME"/decode_test_"$MAX_ENC_STEPS"maxenc_4beam_"$MIN_DEC_STEPS"mindec_"$MAX_DEC_STEPS"maxdec_ckpt-238410/sheets_results.txt
+cat "$LOG_ROOT"/"$EXP_NAME"_beta"$OPTIONAL_EXP_NAME"/decode_test_"$MAX_ENC_STEPS"maxenc_4beam_"$MIN_DEC_STEPS"mindec_"$MAX_DEC_STEPS"maxdec_ckpt-238410/sheets_results.txt

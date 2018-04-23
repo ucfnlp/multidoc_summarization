@@ -24,7 +24,8 @@ from tensorflow.python.ops import math_ops
 
 # Note: this function is based on tf.contrib.legacy_seq2seq_attention_decoder, which is now outdated.
 # In the future, it would make more sense to write variants on the attention mechanism using the new seq2seq library for tensorflow 1.0: https://www.tensorflow.org/api_guides/python/contrib.seq2seq#Attention
-def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding_mask, cell, initial_state_attention=False, pointer_gen=True, use_coverage=False, prev_coverage=None, logan_beta=None):
+def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding_mask, cell, initial_state_attention=False,
+                      pointer_gen=True, use_coverage=False, prev_coverage=None, logan_beta=None):
     """
     Args:
         decoder_inputs: A list of 2D Tensors [batch_size x input_size].
@@ -132,6 +133,7 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
 
                     if use_coverage: # first step of training
                         coverage = tf.expand_dims(tf.expand_dims(attn_dist,2),2) # initialize coverage
+                    pre_attn_dist = None
 
                 # Calculate the context vector from attn_dist and encoder_states
                 context_vector = math_ops.reduce_sum(array_ops.reshape(attn_dist, [batch_size, -1, 1, 1]) * encoder_states, [1, 2]) # shape (batch_size, attn_size).

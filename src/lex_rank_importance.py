@@ -65,7 +65,7 @@ class LexRankSummarizer(AbstractSummarizer):
             raise ValueError("LexRank summarizer requires NumPy. Please, install it by command 'pip install numpy'.")
 
     def _to_words_set(self, sentence, tokenizer):
-        sentence_str = ' '.join(sentence)
+        sentence_str = u' '.join(sentence)
         words = tokenizer.to_words(sentence_str)
         words = map(self.normalize_word, words)
         return [self.stem_word(w) for w in words if w not in self._stop_words]

@@ -28,6 +28,8 @@ from model import SummarizationModel
 from decode import BeamSearchDecoder
 import util
 from tensorflow.python import debug as tf_debug
+from tqdm import tqdm
+from tqdm import trange
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -93,6 +95,17 @@ tf.app.flags.DEFINE_boolean('logan_beta', False, 'Set to true if using logan_cov
 tf.app.flags.DEFINE_float('logan_coverage_tau', 1.0, 'Tau factor to skew the coverage distribution. Set to 1.0 to turn off.')
 tf.app.flags.DEFINE_float('logan_importance_tau', 1.0, 'Tau factor to skew the importance distribution. Set to 1.0 to turn off.')
 tf.app.flags.DEFINE_float('logan_beta_tau', 1.0, 'Tau factor to skew the combined beta distribution. Set to 1.0 to turn off.')
+tf.app.flags.DEFINE_integer('logan_chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
+tf.app.flags.DEFINE_integer('num_iterations', 60000, 'How many iterations to run. Set to -1 to run indefinitely.')
+tf.app.flags.DEFINE_boolean('coverage_optimization', True, 'If true, only recalculates coverage when necessary.')
+tf.app.flags.DEFINE_boolean('logan_reservoir', False, 'If true, use the paradigm of importance being a reservoir that keeps\
+                            being reduced by the similarity to the summary sentences.')
+tf.app.flags.DEFINE_boolean('logan_mute', False, 'If true, then pick top k (defined by ) sentences and mute all others.')
+tf.app.flags.DEFINE_integer('logan_mute_k', 5, 'How many sentences to select when running in mute mode.')
+tf.app.flags.DEFINE_boolean('logan_save_distributions', False, 'If true, save plots of each distribution.')
+tf.app.flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
+                            sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
+                            , ngram_similarity, cosine_similarity')
 
 # If use a pretrained model
 tf.app.flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')
@@ -220,33 +233,44 @@ def run_training(model, batcher, sess_context_manager, sv, summary_writer):
         if FLAGS.debug: # start the tensorflow debugger
             sess = tf_debug.LocalCLIDebugWrapperSession(sess)
             sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
-        while True: # repeats until interrupted
-            batch = batcher.next_batch()
+        if FLAGS.num_iterations == -1:
+            while True: # repeats until interrupted
+                run_training_iteration(model, batcher, summary_writer, sess)
+        else:
+            initial_iter = model.global_step.eval(sess)
+            pbar = tqdm(initial=initial_iter, total=FLAGS.num_iterations)
+            print("Starting at iteration %d" % initial_iter)
+            for iter_idx in range(initial_iter, FLAGS.num_iterations):
+                run_training_iteration(model, batcher, summary_writer, sess)
+                pbar.update(1)
+            pbar.close()
 
-            tf.logging.info('running training step...')
-            t0=time.time()
-            results = model.run_train_step(sess, batch)
-            t1=time.time()
-            tf.logging.info('seconds for training step: %.3f', t1-t0)
+def run_training_iteration(model, batcher, summary_writer, sess):
+    batch = batcher.next_batch()
 
-            loss = results['loss']
-            tf.logging.info('loss: %f', loss) # print the loss to screen
+    # tqdm.write('running training step...')
+    t0=time.time()
+    results = model.run_train_step(sess, batch)
+    t1=time.time()
+    # tqdm.write('seconds for training step: %.3f' % (t1-t0))
 
-            if not np.isfinite(loss):
-                raise Exception("Loss is not finite. Stopping.")
+    loss = results['loss']
+    tqdm.write('loss: %f' % loss) # print the loss to screen
 
-            if FLAGS.coverage:
-                coverage_loss = results['coverage_loss']
-                tf.logging.info("coverage_loss: %f", coverage_loss) # print the coverage loss to screen
+    if not np.isfinite(loss):
+        raise util.InfinityValueError("Loss is not finite. Stopping.")
 
-            # get the summaries and iteration number so we can write summaries to tensorboard
-            summaries = results['summaries'] # we will write these summaries to tensorboard using summary_writer
-            train_step = results['global_step'] # we need this to update our running average loss
+    if FLAGS.coverage:
+        coverage_loss = results['coverage_loss']
+        tqdm.write("coverage_loss: %f" % coverage_loss) # print the coverage loss to screen
 
-            summary_writer.add_summary(summaries, train_step) # write the summaries
-            if train_step % 100 == 0: # flush the summary writer every so often
-                summary_writer.flush()
+    # get the summaries and iteration number so we can write summaries to tensorboard
+    summaries = results['summaries'] # we will write these summaries to tensorboard using summary_writer
+    train_step = results['global_step'] # we need this to update our running average loss
 
+    summary_writer.add_summary(summaries, train_step) # write the summaries
+    if train_step % 100 == 0: # flush the summary writer every so often
+        summary_writer.flush()
 
 def run_eval(model, batcher, vocab):
     """Repeatedly runs eval iterations, logging to screen and writing summaries. Saves the model with the best loss seen so far."""
@@ -300,6 +324,8 @@ def main(unused_argv):
     start_time = time.time()
     if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
         raise Exception("Problem with flags: %s" % unused_argv)
+    if FLAGS.logan_coverage and FLAGS.logan_reservoir:
+        raise Exception("Logan's coverage and reservoir options cannot be used simultaneously. Please pick one or neither.")
 
     tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
     tf.logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
@@ -398,4 +424,9 @@ def main(unused_argv):
         print('Execution time: ', time_taken/3600., ' hr')
 
 if __name__ == '__main__':
-    tf.app.run()
+    try:
+        tf.app.run()
+    except util.InfinityValueError as e:
+        sys.exit(100)
+    except:
+        raise

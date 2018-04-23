@@ -218,8 +218,9 @@ class SummarizationModel(object):
                 emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch) # tensor with shape (batch_size, max_enc_steps, emb_size)
                 emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
 
-            # Add embedder (for Logan's coverage)
-            self.token_embeddings = tf.nn.embedding_lookup(embedding, self.token_inputs)
+            if hps.mode == "decode" and hps.coverage:
+                # Add embedder (for Logan's coverage)
+                self.token_embeddings = tf.nn.embedding_lookup(embedding, self.token_inputs)
 
             # Add the encoder.
             enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
