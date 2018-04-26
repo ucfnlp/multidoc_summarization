@@ -87,16 +87,24 @@ def calc_ROUGE_L_score(candidate, reference):
     # assert (len(candidate) == 1)
     # assert (len(refs) > 0)
     beta = 1.2
+    prec = []
+    rec = []
+
+    if type(reference[0]) is not list:
+        reference = [reference]
+
+    for ref in reference:
+        # compute the longest common subsequence
+        lcs = my_lcs(ref, candidate)
+        prec.append(lcs / float(len(candidate)))
+        rec.append(lcs / float(len(ref)))
 
 
-    # compute the longest common subsequence
-    lcs = my_lcs(reference, candidate)
-    prec = lcs / float(len(candidate))
-    rec = lcs / float(len(reference))
+    prec_max = max(prec)
+    rec_max = max(rec)
 
-
-    if (prec != 0 and rec != 0):
-        score = ((1 + beta ** 2) * prec * rec) / float(rec + beta ** 2 * prec)
+    if (prec_max != 0 and rec_max != 0):
+        score = ((1 + beta ** 2) * prec_max * rec_max) / float(rec_max + beta ** 2 * prec_max)
     else:
         score = 0.0
     return score

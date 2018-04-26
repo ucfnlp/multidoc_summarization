@@ -18,10 +18,10 @@ OPTIONAL_EXP_NAME=${1:-}
 shift 1
 echo "$OPTIONAL_EXP_NAME"
 echo "$@"
-DATA_PATH="/home/logan/data/multidoc_summarization/DUC/full_article_tf_examples/test/*"
+DATA_PATH="/home/logan/data/multidoc_summarization/TAC_Data/full_article_tf_examples/test/*"
 VOCAB_PATH="/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab"
 LOG_ROOT="/home/logan/data/multidoc_summarization/logs"
-EXP_NAME="duc_2004"
+EXP_NAME="tac_2011"
 MAX_ENC_STEPS=100000
 MIN_DEC_STEPS=100
 MAX_DEC_STEPS=120

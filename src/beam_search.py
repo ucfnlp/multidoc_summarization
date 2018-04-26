@@ -442,7 +442,10 @@ def calc_beta_from_sim_and_imp(logan_similarity, logan_importances, prev_beta, b
     # new_beta = np.maximum([0], new_beta)
     # return new_beta
 
-    new_beta = special_squash(prev_beta) - special_squash(logan_similarity)
+    if FLAGS.always_squash:
+        new_beta = special_squash(prev_beta) - special_squash(logan_similarity)
+    else:
+        new_beta = prev_beta - special_squash(logan_similarity)
     # new_beta = prev_beta - logan_similarity
     new_beta = np.maximum(new_beta, 0)
     return new_beta
@@ -456,6 +459,21 @@ def mute_all_except_top_k(array, k):
     array = np.zeros_like(array, dtype=float)
     array[selected_indices] = 1.
     return array
+
+def get_tokens_for_human_summaries(batch, vocab):
+    art_oovs = batch.art_oovs[0]
+    def get_all_summ_tokens(all_summs):
+        return [get_summ_tokens(summ) for summ in all_summs]
+    def get_summ_tokens(summ):
+        summ_tokens = [get_sent_tokens(sent) for sent in summ]
+        return list(itertools.chain.from_iterable(summ_tokens))     # combines all sentences into one list of tokens for summary
+    def get_sent_tokens(sent):
+        words = sent.split()
+        return data.abstract2ids(words, vocab, art_oovs)
+    human_summaries = batch.all_original_abstracts_sents[0]
+    all_summ_tokens = get_all_summ_tokens(human_summaries)
+    return all_summ_tokens
+
 
 
 
@@ -501,9 +519,15 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
 
 
     if FLAGS.logan_importance:
-        # parser = PlaintextParser.from_string(batch.original_articles[0], tokenizer)
-        summarizer = LexRankSummarizer()
-        logan_importances = summarizer.get_importances(enc_sentences, tokenizer)
+        if FLAGS.oracle:
+            human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
+            # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.logan_chunk_size)
+            similarity_matrix = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens)
+            importances_hat = np.sum(similarity_matrix, 1)
+            logan_importances = special_squash(importances_hat)
+        else:
+            summarizer = LexRankSummarizer()
+            logan_importances = summarizer.get_importances(enc_sentences, tokenizer)
         # plot_importances(enc_sentences_str, logan_importances, 'n/a')
         if FLAGS.logan_importance_tau != 1.0:
             logan_importances = softmax_trick(logan_importances, FLAGS.logan_importance_tau)
@@ -512,7 +536,7 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
 
     if FLAGS.logan_reservoir:
         logan_similarity = np.zeros([FLAGS.beam_size, len(enc_sentences)], dtype=float)
-        beta_init = logan_importances
+        beta_init = special_squash(logan_importances)
     elif FLAGS.logan_coverage:
         # Initial coverage (evenly distributed among all sentences)
         logan_coverage = np.ones([FLAGS.beam_size, len(enc_sentences)], dtype=float) / len(enc_sentences)

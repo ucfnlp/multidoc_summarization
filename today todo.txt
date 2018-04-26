@@ -194,7 +194,7 @@ maybe instead of just adding up word embeddings for each sentence,
 do unigram/bigram similarity? or tfidf similarity?
 maybe figure out the tau necessary to get a certain standard deviation over importance or coverage?
 
-
+Why do --always_squash and without, get exAct same scores?
 
 
 

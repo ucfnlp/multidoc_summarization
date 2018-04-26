@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import re
 import subprocess
 import io
+import tensorflow as tf
 import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
@@ -38,15 +39,20 @@ sys.setdefaultencoding('utf8')
 # article, abstract = get_article_abstract()
 # with open(out_file, 'wb') as writer:
 #     write_example(article, abstract, writer)
-    
-for_clustering_single_doc = False
-for_sumy = False
-use_TAC = True     # use TAC or DUC
-full_article = True
+
+
+FLAGS = tf.app.flags.FLAGS
+
+tf.app.flags.DEFINE_boolean('for_clustering_single_doc', False, 'Whether to use clustering format')
+tf.app.flags.DEFINE_boolean('for_sumy', False, 'Whether to use clustering format')
+tf.app.flags.DEFINE_boolean('use_TAC', True, 'Whether to use TAC or DUC')
+tf.app.flags.DEFINE_boolean('full_article', True, '')
+tf.app.flags.DEFINE_boolean('remove_quotes', True, 'Whether to use clustering format')
+
 
 use_stanford_tokenize = False
 
-if use_TAC:
+if FLAGS.use_TAC:
     original_article_dir = '/home/logan/data/multidoc_summarization/TAC_Data/summary_data/s11/test_doc_files'
     original_abstract_dir = '/home/logan/data/multidoc_summarization/TAC_Data/summary_data/s11/models'
     sumy_article_out_dir = '/home/logan/data/multidoc_summarization/TAC_Data/logans_test/for_sumy/articles'
@@ -70,14 +76,14 @@ else:
 p_start_tag = '<P>'
 p_end_tag = '</P>'
 
-if for_clustering_single_doc:
+if FLAGS.for_clustering_single_doc:
     article_dir = clustering_article_dir
     abstract_dir = original_abstract_dir
     out_dir = stanford_clustering_out_dir
 else:
     article_dir = original_article_dir
     abstract_dir = original_abstract_dir
-    if full_article:
+    if FLAGS.full_article:
         out_dir = stanford_full_article_out_dir
     else:
         out_dir = stanford_out_dir
@@ -129,10 +135,18 @@ def stanford_corenlp_tokenize(text):
         sents.append(words)
     return sents
 
+def is_quote(tokens):
+    contains_quotation_marks = "''" in tokens and len(tokens) > 0 and tokens[0] == "``"
+    contains_says = "says" in tokens or "said" in tokens
+    decision = contains_quotation_marks and contains_says
+    if decision:
+        print "Skipping quote: ", ' '.join(tokens)
+    return decision
 
-if for_sumy:
+
+if FLAGS.for_sumy:
     def get_article_abstract(multidoc_dirname, article_dir, abstract_dir):
-        if use_TAC:
+        if FLAGS.use_TAC:
             multidoc_dir = os.path.join(article_dir, multidoc_dirname, multidoc_dirname + '-A')
         else:
             multidoc_dir = os.path.join(article_dir, multidoc_dirname)
@@ -140,13 +154,13 @@ if for_sumy:
         doc_names = sorted(os.listdir(multidoc_dir))
         article = ''
         for doc_name in doc_names:
-            if 'ENG' in doc_name or not use_TAC:
+            if 'ENG' in doc_name or not FLAGS.use_TAC:
 
                 doc_path = os.path.join(multidoc_dir, doc_name)
                 with io.open(doc_path, encoding = "ISO-8859-1") as f:
                     article_text = f.read()
                 soup = BeautifulSoup(article_text, 'html.parser')
-                if use_TAC:
+                if FLAGS.use_TAC:
                     lines = []
                     for tag in soup.findAll('p'):
                         contents = tag.renderContents().replace('\n', ' ').strip()
@@ -160,7 +174,7 @@ if for_sumy:
         abstracts = []
         doc_num = ''.join([s for s in multidoc_dirname if s.isdigit()])
         all_doc_names = os.listdir(abstract_dir)
-        if use_TAC:
+        if FLAGS.use_TAC:
             abstract_doc_name = 'D' + doc_num + '-A'
         else:
             abstract_doc_name = 'D' + doc_num
@@ -203,7 +217,7 @@ else:
                     article += sent + ' '
             return article
         else:
-            if use_TAC:
+            if FLAGS.use_TAC:
                 multidoc_dir = os.path.join(article_dir, multidoc_dirname, multidoc_dirname + '-A')
             else:
                 multidoc_dir = os.path.join(article_dir, multidoc_dirname)
@@ -211,31 +225,33 @@ else:
             doc_names = sorted(os.listdir(multidoc_dir))
             article = ''
             for doc_name in doc_names:
-                if 'ENG' in doc_name or not use_TAC:
+                if 'ENG' in doc_name or not FLAGS.use_TAC:
                     doc_path = os.path.join(multidoc_dir, doc_name)
                     with open(doc_path) as f:
                         article_text = f.read()
                     soup = BeautifulSoup(article_text, 'html.parser')
-                    if use_TAC:
+                    if FLAGS.use_TAC:
                         lines = []
                         for tag in soup.findAll('p'):
                             lines.append(tag.renderContents().replace('\n', ' ').strip())
                         contents = ' '.join(lines)
                         if use_stanford_tokenize:
                             sentences = stanford_corenlp_tokenize(contents)
-                            if not full_article:
+                            if not FLAGS.full_article:
                                 sentences = sentences[:5]
                             for sent in sentences:
                                 sentence_text = ' '.join(sent)
                                 article += sentence_text + ' '
                         else:
                             sentences = nltk.tokenize.sent_tokenize(contents)
-                            if not full_article:
+                            if not FLAGS.full_article:
                                 sentences = sentences[:5]
                             for line in sentences:
                                 line = line.lower()
                                 tokenized_sent = nltk.word_tokenize(line)
                                 tokenized_sent = [fix_bracket_token(token) for token in tokenized_sent]
+                                if FLAGS.remove_quotes and is_quote(tokenized_sent):
+                                    continue
                                 sent = ' '.join(tokenized_sent)
                                 article += sent + ' '
                     else:
@@ -243,30 +259,32 @@ else:
                         contents = ' '.join(contents.split())
                         if use_stanford_tokenize:
                             sentences = stanford_corenlp_tokenize(contents)
-                            if not full_article:
+                            if not FLAGS.full_article:
                                 sentences = sentences[:5]
                             for sent in sentences:
                                 sentence_text = ' '.join(sent)
                                 article += sentence_text + ' '
                         else:
                             sentences = nltk.tokenize.sent_tokenize(contents)
-                            if not full_article:
+                            if not FLAGS.full_article:
                                 sentences = sentences[:5]
                             for line in sentences:
                                 line = line.lower()
                                 tokenized_sent = nltk.word_tokenize(line)
                                 tokenized_sent = [fix_bracket_token(token) for token in tokenized_sent]
+                                if FLAGS.remove_quotes and is_quote(tokenized_sent):
+                                    continue
                                 sent = ' '.join(tokenized_sent)
                                 article += sent + ' '
             return article
 
     def get_article_abstract(multidoc_dirname, article_dir, abstract_dir):
-        article = get_article(multidoc_dirname, is_single_doc=for_clustering_single_doc)
+        article = get_article(multidoc_dirname, is_single_doc=FLAGS.for_clustering_single_doc)
         #                 article += '<s> ' + sent + ' </s> '
         abstracts = []
         doc_num = ''.join([s for s in multidoc_dirname if s.isdigit()])
         all_doc_names = os.listdir(abstract_dir)
-        if use_TAC:
+        if FLAGS.use_TAC:
             abstract_doc_name = 'D' + doc_num + '-A'
         else:
             abstract_doc_name = 'D' + doc_num

@@ -106,6 +106,9 @@ tf.app.flags.DEFINE_boolean('logan_save_distributions', False, 'If true, save pl
 tf.app.flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
                             sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
                             , ngram_similarity, cosine_similarity')
+tf.app.flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
+tf.app.flags.DEFINE_boolean('oracle', True, 'Only used if using logan_reservoir. If true, then calculate importance as the ROUGE-L between source sentences and ground truth sentences.')
+
 
 # If use a pretrained model
 tf.app.flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')

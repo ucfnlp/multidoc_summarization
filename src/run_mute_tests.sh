@@ -14,13 +14,18 @@ hupexit() {
 trap hupexit HUP
 trap intexit INT
 
-exp_name="duc_2004"
+exp_name="tac_2011"
 
 K_VALUES=${1:-"3 4 5 6 8 10 13 15"}
 SIMILARITY_FN=${2:-"rouge_l"}
+OPTIONAL_EXP_NAME=${3:-}
+shift 3
+echo "$OPTIONAL_EXP_NAME"
+echo "$@"
+
 
 for k in $K_VALUES; do
-	sh test_one_no_options.sh _reservoir_mute_"$k"_"$SIMILARITY_FN" --logan_importance --logan_beta --logan_reservoir --similarity_fn="$SIMILARITY_FN" --logan_mute --logan_mute_k="$k" & pids+=($!)
+	sh test_one_no_options.sh _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME" --logan_importance --logan_beta --logan_reservoir --similarity_fn="$SIMILARITY_FN" --logan_mute --logan_mute_k="$k" "$@" & pids+=($!)
 done
 
 for pid in "${pids[@]}"; do
@@ -29,7 +34,9 @@ done
 
 for k in $K_VALUES; do
 	echo $k
-	sh get_results_one.sh "$exp_name" _reservoir_mute_"$k"_"$SIMILARITY_FN";
+done
+for k in $K_VALUES; do
+	sh get_results_one.sh "$exp_name" _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME";
 done
 
 wait
