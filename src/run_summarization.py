@@ -18,7 +18,11 @@
 
 import sys
 import time
+import gpu_util
 import os
+best_gpu = str(gpu_util.pick_gpu_lowest_memory())
+if best_gpu != 'None':
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_util.pick_gpu_lowest_memory())
 import tensorflow as tf
 import numpy as np
 from collections import namedtuple
@@ -50,7 +54,7 @@ tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example dataf
 tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
 
 # Important settings
-tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode')
+tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode/calc_features')
 tf.app.flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
 
 # Where to save output
@@ -95,19 +99,27 @@ tf.app.flags.DEFINE_boolean('logan_beta', False, 'Set to true if using logan_cov
 tf.app.flags.DEFINE_float('logan_coverage_tau', 1.0, 'Tau factor to skew the coverage distribution. Set to 1.0 to turn off.')
 tf.app.flags.DEFINE_float('logan_importance_tau', 1.0, 'Tau factor to skew the importance distribution. Set to 1.0 to turn off.')
 tf.app.flags.DEFINE_float('logan_beta_tau', 1.0, 'Tau factor to skew the combined beta distribution. Set to 1.0 to turn off.')
-tf.app.flags.DEFINE_integer('logan_chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
+tf.app.flags.DEFINE_integer('chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
 tf.app.flags.DEFINE_integer('num_iterations', 60000, 'How many iterations to run. Set to -1 to run indefinitely.')
 tf.app.flags.DEFINE_boolean('coverage_optimization', True, 'If true, only recalculates coverage when necessary.')
 tf.app.flags.DEFINE_boolean('logan_reservoir', False, 'If true, use the paradigm of importance being a reservoir that keeps\
                             being reduced by the similarity to the summary sentences.')
-tf.app.flags.DEFINE_boolean('logan_mute', False, 'If true, then pick top k (defined by ) sentences and mute all others.')
-tf.app.flags.DEFINE_integer('logan_mute_k', 5, 'How many sentences to select when running in mute mode.')
-tf.app.flags.DEFINE_boolean('logan_save_distributions', False, 'If true, save plots of each distribution.')
+tf.app.flags.DEFINE_integer('mute_k', -1, 'Pick top k sentences to select and mute all others. Set to -1 to turn off.')
+tf.app.flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of each distribution.')
 tf.app.flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
                             sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
                             , ngram_similarity, cosine_similarity')
-tf.app.flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
-tf.app.flags.DEFINE_boolean('oracle', True, 'Only used if using logan_reservoir. If true, then calculate importance as the ROUGE-L between source sentences and ground truth sentences.')
+tf.app.flags.DEFINE_boolean('always_squash', True, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
+tf.app.flags.DEFINE_boolean('oracle', False, 'Only used if using logan_reservoir. If true, then calculate importance as the ROUGE-L between source sentences and ground truth sentences.')
+tf.app.flags.DEFINE_boolean('retain_beta_values', False, 'Only used if using mute mode. If true, then the beta being\
+                                                         multiplied by alpha will not be a 0/1 mask, but instead keeps their values.')
+tf.app.flags.DEFINE_string('save_path', '', 'Path expression to save importances features.')
+tf.app.flags.DEFINE_boolean('no_balancing', False, 'Only if in calc_features mode. If False, then perform balancing based \
+                                                   on how many sentences have R-L greater than 0.5.')
+tf.app.flags.DEFINE_string('importance_model_path', '/home/logan/data/multidoc_summarization/logs/importance_svr_100000/model.pickle', 'Path expression to importance prediction model.')
+tf.app.flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank}.')
+tf.app.flags.DEFINE_boolean('use_cluster_dist', False, 'Only if in calc_features mode. If True, then use the cluster distance as the cluster representation')
+tf.app.flags.DEFINE_boolean('multiple_articles', True, 'If True, then expect examples that have multiple documents.')
 
 
 # If use a pretrained model
@@ -329,6 +341,9 @@ def main(unused_argv):
         raise Exception("Problem with flags: %s" % unused_argv)
     if FLAGS.logan_coverage and FLAGS.logan_reservoir:
         raise Exception("Logan's coverage and reservoir options cannot be used simultaneously. Please pick one or neither.")
+    if FLAGS.logan_reservoir:
+        FLAGS.logan_importance = True
+        FLAGS.logan_beta = True
 
     tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
     tf.logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
@@ -349,9 +364,11 @@ def main(unused_argv):
     # On each step, we have beam_size-many hypotheses in the beam, so we need to make a batch of these hypotheses.
     if FLAGS.mode == 'decode':
         FLAGS.batch_size = FLAGS.beam_size
+    # if FLAGS.mode == 'calc_features':
+    #     FLAGS.batch_size = 100
 
     # If single_pass=True, check we're in decode mode
-    if FLAGS.single_pass and FLAGS.mode!='decode':
+    if FLAGS.single_pass and (FLAGS.mode!='decode' and FLAGS.mode!='calc_features'):
         raise Exception("The single_pass flag should only be True in decode mode")
 
     # Make a namedtuple hps, containing the values of the hyperparameters that the model needs
@@ -379,7 +396,6 @@ def main(unused_argv):
         decode_model_hps = hps._replace(max_dec_steps=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
         model = SummarizationModel(decode_model_hps, vocab)
         decoder = BeamSearchDecoder(model, batcher, vocab)
-
 
 
 
@@ -413,6 +429,15 @@ def main(unused_argv):
 
 
         decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
+    elif hps.mode == 'calc_features':
+        if not os.path.exists(FLAGS.save_path): os.makedirs(FLAGS.save_path)
+        decode_model_hps = hps  # This will be the hyperparameters for the decoder model
+        decode_model_hps = hps._replace(
+            max_dec_steps=1)  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+        model = SummarizationModel(decode_model_hps, vocab)
+        decoder = BeamSearchDecoder(model, batcher, vocab)
+        decoder.calc_importance_features()
+
     else:
         raise ValueError("The 'mode' flag must be one of train/eval/decode")
 

@@ -25,7 +25,7 @@ echo "$@"
 
 
 for k in $K_VALUES; do
-	sh test_one_no_options.sh _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME" --logan_importance --logan_beta --logan_reservoir --similarity_fn="$SIMILARITY_FN" --logan_mute --logan_mute_k="$k" "$@" & pids+=($!)
+	sh test_one_no_options.sh _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME" --logan_importance --logan_beta --logan_reservoir --similarity_fn="$SIMILARITY_FN" --mute_k="$k" "$@" & pids+=($!)
 done
 
 for pid in "${pids[@]}"; do

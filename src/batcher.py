@@ -28,7 +28,7 @@ import data
 class Example(object):
     """Class representing a train/val/test example for text summarization."""
 
-    def __init__(self, article, abstract_sentences, all_abstract_sentences, vocab, hps):
+    def __init__(self, article, abstract_sentences, all_abstract_sentences, doc_indices, vocab, hps):
         """Initializes the Example, performing tokenization and truncation to produce the encoder, decoder and target sequences, which are stored in self.
 
         Args:
@@ -76,6 +76,8 @@ class Example(object):
         self.original_abstract_sents = abstract_sentences
         self.all_original_abstract_sents = all_abstract_sentences
 
+        self.doc_indices = doc_indices
+
 
     def get_dec_inp_targ_seqs(self, sequence, max_len, start_id, stop_id):
         """Given the reference summary as a sequence of tokens, return the input sequence for the decoder, and the target sequence which we will use to calculate loss. The sequence will be truncated if it is longer than max_len. The input sequence must start with the start_id and the target sequence must end with the stop_id (but not if it's been truncated).
@@ -117,6 +119,11 @@ class Example(object):
             while len(self.enc_input_extend_vocab) < max_len:
                 self.enc_input_extend_vocab.append(pad_id)
 
+    def pad_doc_indices(self, max_len, pad_id):
+        """Pad the encoder input sequence with pad_id up to max_len."""
+        while len(self.doc_indices) < max_len:
+            self.doc_indices.append(pad_id)
+
 
 class Batch(object):
     """Class representing a minibatch of train/val/test examples for text summarization."""
@@ -157,12 +164,14 @@ class Batch(object):
         # Pad the encoder input sequences up to the length of the longest sequence
         for ex in example_list:
             ex.pad_encoder_input(max_enc_seq_len, self.pad_id)
+            ex.pad_doc_indices(max_enc_seq_len, 0)
 
         # Initialize the numpy arrays
         # Note: our enc_batch can have different length (second dimension) for each batch because we use dynamic_rnn for the encoder.
         self.enc_batch = np.zeros((hps.batch_size, max_enc_seq_len), dtype=np.int32)
         self.enc_lens = np.zeros((hps.batch_size), dtype=np.int32)
         self.enc_padding_mask = np.zeros((hps.batch_size, max_enc_seq_len), dtype=np.float32)
+        self.doc_indices = np.zeros((hps.batch_size, max_enc_seq_len), dtype=np.float32)
 
         # Fill in the numpy arrays
         for i, ex in enumerate(example_list):
@@ -170,6 +179,7 @@ class Batch(object):
             self.enc_lens[i] = ex.enc_len
             for j in xrange(ex.enc_len):
                 self.enc_padding_mask[i][j] = 1
+            self.doc_indices[i, :] = ex.doc_indices
 
         # For pointer-generator mode, need to store some extra info
         if hps.pointer_gen:
@@ -272,7 +282,7 @@ class Batcher(object):
     def next_batch(self):
         """Return a Batch from the batch queue.
 
-        If mode='decode' then each batch contains a single example repeated beam_size-many times; this is necessary for beam search.
+        If mode='decode' or 'calc_features' then each batch contains a single example repeated beam_size-many times; this is necessary for beam search.
 
         Returns:
             batch: a Batch object, or None if we're in single_pass mode and we've exhausted the dataset.
@@ -291,11 +301,11 @@ class Batcher(object):
         """Reads data from file and processes into Examples which are then placed into the example queue."""
 
         input_gen = self.text_generator(data.example_generator(self._data_path, self._single_pass))
-
+        # counter = 0
         while True:
             try:
                 (article,
-                 abstracts) = input_gen.next()  # read the next example from file. article and abstract are both strings.
+                 abstracts, doc_indices_str) = input_gen.next()  # read the next example from file. article and abstract are both strings.
             except StopIteration:  # if there are no more examples:
                 tf.logging.info("The example generator for this example queue filling thread has exhausted data.")
                 if self._single_pass:
@@ -311,9 +321,11 @@ class Batcher(object):
             all_abstract_sentences = [[sent.strip() for sent in data.abstract2sents(
                 abstract)] for abstract in abstracts]
             abstract_sentences = all_abstract_sentences[0]
-            example = Example(article, abstract_sentences, all_abstract_sentences, self._vocab, self._hps)  # Process into an Example.
+            doc_indices = [int(idx) for idx in doc_indices_str.strip().split()]
+            example = Example(article, abstract_sentences, all_abstract_sentences, doc_indices, self._vocab, self._hps)  # Process into an Example.
             self._example_queue.put(example)  # place the Example in the example queue.
-
+            # print "example num", counter
+            # counter += 1
 
     def fill_batch_queue(self):
         """Takes Examples out of example queue, sorts them by encoder sequence length, processes into Batches and places them in the batch queue.
@@ -321,7 +333,9 @@ class Batcher(object):
         In decode mode, makes batches that each contain a single example repeated.
         """
         while True:
-            if self._hps.mode != 'decode':
+
+            # print 'hi'
+            if self._hps.mode != 'decode' and self._hps.mode != 'calc_features':
                 # Get bucketing_cache_size-many batches of Examples into a list, then sort
                 inputs = []
                 for _ in xrange(self._hps.batch_size * self._bucketing_cache_size):
@@ -337,10 +351,27 @@ class Batcher(object):
                 for b in batches:	# each b is a list of Example objects
                     self._batch_queue.put(Batch(b, self._hps, self._vocab))
 
-            else: # beam search decode mode
+            elif self._hps.mode == 'decode': # beam search decode mode
                 ex = self._example_queue.get()
                 b = [ex for _ in xrange(self._hps.batch_size)]
                 self._batch_queue.put(Batch(b, self._hps, self._vocab))
+            else:   # calc features mode
+                inputs = []
+                for _ in xrange(self._hps.batch_size * self._bucketing_cache_size):
+                    inputs.append(self._example_queue.get())
+                    # print "_ %d"%_
+                # print "inputs len%d"%len(inputs)
+                # Group the sorted Examples into batches, and place in the batch queue.
+                batches = []
+                for i in xrange(0, len(inputs), self._hps.batch_size):
+                    # print i
+                    batches.append(inputs[i:i + self._hps.batch_size])
+
+                # if not self._single_pass:
+                #     shuffle(batches)
+                for b in batches:	# each b is a list of Example objects
+                    self._batch_queue.put(Batch(b, self._hps, self._vocab))
+
 
 
     def watch_threads(self):
@@ -375,10 +406,15 @@ class Batcher(object):
                 article_text = e.features.feature['article'].bytes_list.value[0] # the article text was saved under the key 'article' in the data files
                 for abstract in e.features.feature['abstract'].bytes_list.value:
                     abstract_texts.append(abstract) # the abstract text was saved under the key 'abstract' in the data files
+                if 'doc_indices' not in e.features.feature or len(e.features.feature['doc_indices'].bytes_list.value) == 0:
+                    num_words = len(article_text.split())
+                    doc_indices_text = '0 ' * num_words
+                else:
+                    doc_indices_text = e.features.feature['doc_indices'].bytes_list.value[0]
             except ValueError:
                 tf.logging.error('Failed to get article or abstract from example')
                 continue
             if len(article_text)==0: # See https://github.com/abisee/pointer-generator/issues/1
                 tf.logging.warning('Found an example with empty article text. Skipping it.')
             else:
-                yield (article_text, abstract_texts)
+                yield (article_text, abstract_texts, doc_indices_text)

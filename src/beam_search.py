@@ -15,7 +15,7 @@
 # ==============================================================================
 
 """This file contains code to run beam search decoding"""
-
+import cPickle
 import tensorflow as tf
 import numpy as np
 import os
@@ -37,6 +37,7 @@ from lex_rank_importance import LexRankSummarizer
 from sumy.parsers.plaintext import PlaintextParser
 import util
 from util import Similarity_Functions
+import importance_features
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -185,46 +186,6 @@ def chunk_tokens(tokens, chunk_size):
 def flatten_list_of_lists(list_of_lists):
     return list(itertools.chain.from_iterable(list_of_lists))
 
-def tokens_to_continuous_text(tokens, vocab, art_oovs):
-    words = data.outputids2words(tokens, vocab, art_oovs)
-    text = ' '.join(words)
-    text = text.decode('utf8')
-    return text
-
-def get_enc_sents_and_tokens_with_cutoff_length(original_article, enc_batch_extend_vocab, cutoff_len, tokenizer,
-                                                art_oovs, vocab, chunk_size=-1):
-    enc_text = tokens_to_continuous_text(enc_batch_extend_vocab, vocab, art_oovs)
-    if chunk_size == -1:
-        all_enc_sentences = tokenizer.to_sentences(enc_text)
-        all_tokens = flatten_list_of_lists([sent.split() for sent in all_enc_sentences])
-    else:
-        all_tokens = enc_text.split()
-        chunked_tokens = chunk_tokens(all_tokens, chunk_size)
-        all_enc_sentences = [' '.join(chunk) for chunk in chunked_tokens]
-    if len(all_tokens) != len(enc_batch_extend_vocab):
-        raise Exception('All_tokens ('+str(len(all_tokens))+
-                        ') does not have the same number of tokens as enc_batch ('+str(len(enc_batch_extend_vocab))+')')
-    select_enc_sentences = []
-    select_enc_tokens = []
-    count = 0
-    for sent_idx, sent in enumerate(all_enc_sentences):
-        sent_to_add = []
-        tokens_to_add = []
-        should_break = False
-        tokens = sent.split()
-        for word_idx, word in enumerate(tokens):
-            sent_to_add.append(word)
-            tokens_to_add.append(enc_batch_extend_vocab[count])
-            count += 1
-            if count == cutoff_len:
-                should_break = True
-                break
-        select_enc_sentences.append(sent_to_add)
-        select_enc_tokens.append(tokens_to_add)
-        if should_break:
-            break
-    return select_enc_sentences, select_enc_tokens
-
 
 def get_sentences_embeddings(enc_sentences, enc_tokens, sess, batch, vocab):
     embedding_matrix = [v for v in tf.global_variables() if v.name == "seq2seq/embedding/embedding:0"][0]
@@ -276,7 +237,7 @@ def get_sentences_embeddings(enc_sentences, enc_tokens, sess, batch, vocab):
 
 
 def get_summ_sents_and_tokens(summ_tokens, tokenizer, batch, vocab, chunk_size=-1):
-    summ_str = tokens_to_continuous_text(summ_tokens, vocab, batch.art_oovs[0])
+    summ_str = importance_features.tokens_to_continuous_text(summ_tokens, vocab, batch.art_oovs[0])
     if chunk_size == -1:
         sentences = tokenizer.to_sentences(summ_str)
         if data.PERIOD not in sentences[-1]:
@@ -353,7 +314,7 @@ def softmax_trick(distribution, tau):
 def save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_embs, enc_words_embs_list,
                                    enc_tokens, hyp, sess, batch, vocab, tokenizer, ex_index):
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
-    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.logan_chunk_size)
+    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
     summ_embeddings, summ_words_embs_list, summ_words_list = get_sentences_embeddings(summ_sents, summ_tokens,
                                                                                       sess, batch, vocab)
     prev_beta = logan_importances
@@ -456,9 +417,14 @@ def mute_all_except_top_k(array, k):
         selected_indices = np.nonzero(array)
     else:
         selected_indices = array.argsort()[::-1][:k]
-    array = np.zeros_like(array, dtype=float)
-    array[selected_indices] = 1.
-    return array
+    res = np.zeros_like(array, dtype=float)
+    for selected_idx in selected_indices:
+        if FLAGS.retain_beta_values:
+            res[selected_idx] = array[selected_idx]
+        else:
+            res[selected_idx] = 1.
+    # res[selected_indices] = 1.
+    return res
 
 def get_tokens_for_human_summaries(batch, vocab):
     art_oovs = batch.art_oovs[0]
@@ -474,7 +440,17 @@ def get_tokens_for_human_summaries(batch, vocab):
     all_summ_tokens = get_all_summ_tokens(human_summaries)
     return all_summ_tokens
 
-
+def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model):
+    sent_indices = enc_sent_indices
+    sent_lens, sent_reps, cluster_representation = importance_features.get_importance_features_for_article(
+        enc_states, enc_sentences, use_cluster_dist=FLAGS.use_cluster_dist)
+    if FLAGS.use_cluster_dist:
+        cluster_representations = np.expand_dims(cluster_representation, 1)
+    else:
+        cluster_representations = np.tile(cluster_representation, [len(sent_indices), 1])
+    x = np.concatenate([np.expand_dims(sent_indices, 1), np.expand_dims(sent_lens, 1), sent_reps, cluster_representations], 1)
+    importances = svr_model.predict(x)
+    return importances
 
 
 
@@ -507,12 +483,14 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
 
 
 
-
+    if FLAGS.importance_fn == 'svr':
+        with open(os.path.join(FLAGS.importance_model_path), 'rb') as f:
+            svr_model = cPickle.load(f)
     tokenizer = Tokenizer('english')
 
-    enc_sentences, enc_tokens = get_enc_sents_and_tokens_with_cutoff_length(
-                    batch.original_articles[0], batch.enc_batch_extend_vocab[0],
-                    len(batch.enc_batch_extend_vocab[0]), tokenizer, batch.art_oovs[0], vocab, FLAGS.logan_chunk_size)
+    enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
+                    batch.enc_batch_extend_vocab[0], tokenizer, batch.art_oovs[0], vocab, batch.doc_indices[0],
+                    False, chunk_size=FLAGS.chunk_size, cutoff_len=FLAGS.max_enc_steps)
     enc_sent_embs, enc_words_embs_list, enc_words_list = get_sentences_embeddings(enc_sentences, enc_tokens,
                                                                                             sess, batch, vocab)
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
@@ -521,13 +499,17 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
     if FLAGS.logan_importance:
         if FLAGS.oracle:
             human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
-            # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.logan_chunk_size)
+            # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
             similarity_matrix = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens)
             importances_hat = np.sum(similarity_matrix, 1)
             logan_importances = special_squash(importances_hat)
         else:
-            summarizer = LexRankSummarizer()
-            logan_importances = summarizer.get_importances(enc_sentences, tokenizer)
+            if FLAGS.importance_fn == 'lex_rank':
+                summarizer = LexRankSummarizer()
+                logan_importances = summarizer.get_importances(enc_sentences, tokenizer)
+            elif FLAGS.importance_fn == 'svr':
+                logan_importances = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model)
+            logan_importances = special_squash(logan_importances)
         # plot_importances(enc_sentences_str, logan_importances, 'n/a')
         if FLAGS.logan_importance_tau != 1.0:
             logan_importances = softmax_trick(logan_importances, FLAGS.logan_importance_tau)
@@ -576,8 +558,8 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
         prev_coverage = [h.coverage for h in hyps]  # list of coverage vectors (or None)
         prev_beta = [h.beta for h in hyps]
         if FLAGS.logan_beta:
-            if FLAGS.logan_mute:
-                prev_beta = [mute_all_except_top_k(beta, FLAGS.logan_mute_k) for beta in prev_beta]
+            if FLAGS.mute_k != -1:
+                prev_beta = [mute_all_except_top_k(beta, FLAGS.mute_k) for beta in prev_beta]
             prev_beta_for_words = [convert_to_word_level(beta, batch, enc_tokens) for beta in prev_beta]
         else:
             prev_beta_for_words = [None for _ in prev_beta]
@@ -626,10 +608,10 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
 
         if FLAGS.logan_reservoir:
             for hyp_idx, hyp in enumerate(hyps):
-                if (hyp.latest_token == vocab.word2id(data.PERIOD) and FLAGS.logan_chunk_size == -1) or (    # if in regular mode, and the hyp ends in a period
-                    FLAGS.logan_chunk_size > -1 and len(hyp.tokens) % FLAGS.logan_chunk_size == 0   # if in chunk mode, and hyp just finished a chunk
+                if (hyp.latest_token == vocab.word2id(data.PERIOD) and FLAGS.chunk_size == -1) or (    # if in regular mode, and the hyp ends in a period
+                    FLAGS.chunk_size > -1 and len(hyp.tokens) % FLAGS.chunk_size == 0   # if in chunk mode, and hyp just finished a chunk
                 ) or (not FLAGS.coverage_optimization):
-                    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.logan_chunk_size)
+                    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
                     summ_embeddings, summ_words_embs_list, summ_words_list = get_sentences_embeddings(summ_sents, summ_tokens,
                                                                                                       sess, batch, vocab)
                     summ_str = ' '.join([' '.join(sent) for sent in summ_sents])
@@ -646,10 +628,10 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
                 #     np.savetxt(f, hyp.beta)
         if FLAGS.logan_coverage:
             for hyp_idx, hyp in enumerate(hyps):
-                if (hyp.latest_token == vocab.word2id(data.PERIOD) and FLAGS.logan_chunk_size == -1) or (    # if in regular mode, and the hyp ends in a period
-                    FLAGS.logan_chunk_size > -1 and len(hyp.tokens) % FLAGS.logan_chunk_size == 0   # if in chunk mode, and hyp just finished a chunk
+                if (hyp.latest_token == vocab.word2id(data.PERIOD) and FLAGS.chunk_size == -1) or (    # if in regular mode, and the hyp ends in a period
+                    FLAGS.chunk_size > -1 and len(hyp.tokens) % FLAGS.chunk_size == 0   # if in chunk mode, and hyp just finished a chunk
                 ) or (not FLAGS.coverage_optimization):
-                    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.logan_chunk_size)
+                    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
                     summ_embeddings, summ_words_embs_list, summ_words_list = get_sentences_embeddings(summ_sents, summ_tokens,
                                                                                                       sess, batch, vocab)
                     summ_str = ' '.join([' '.join(sent) for sent in summ_sents])
@@ -678,7 +660,8 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
     hyps_sorted = sort_hyps(results)
     best_hyp = hyps_sorted[0]
 
-    if FLAGS.logan_save_distributions and ((FLAGS.logan_importance and FLAGS.logan_coverage) or FLAGS.logan_reservoir):
+    if (ex_index in [0,1]) or (FLAGS.save_distributions and
+                           ((FLAGS.logan_importance and FLAGS.logan_coverage) or FLAGS.logan_reservoir)):
         save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_embs, enc_words_embs_list,
                                    enc_tokens, best_hyp, sess, batch, vocab, tokenizer, ex_index)
     # if FLAGS.logan_importance and FLAGS.logan_reservoir:

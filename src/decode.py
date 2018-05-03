@@ -15,7 +15,7 @@
 # ==============================================================================
 
 """This file contains code to run beam search decoding, including running ROUGE evaluation and producing JSON datafiles for the in-browser attention visualizer, which can be found here https://github.com/abisee/attn_vis"""
-
+import glob
 import os
 import time
 import tensorflow as tf
@@ -25,11 +25,19 @@ import json
 import pyrouge
 import util
 import logging
+from sumy.nlp.tokenizers import Tokenizer
 import numpy as np
+import itertools
+from tqdm import tqdm
+import warnings
+
+import importance_features
 
 FLAGS = tf.app.flags.FLAGS
 
 SECS_UNTIL_NEW_CKPT = 60	# max number of seconds before loading new checkpoint
+threshold = 0.5
+prob_to_keep = 0.33
 
 
 class BeamSearchDecoder(object):
@@ -208,6 +216,92 @@ class BeamSearchDecoder(object):
         with open(output_fname, 'w') as output_file:
             json.dump(to_write, output_file)
         tf.logging.info('Wrote visualization data to %s', output_fname)
+
+    def calc_importance_features(self):
+        """Calculate sentence-level features and save as a dataset"""
+        data_path_filter_name = os.path.basename(FLAGS.data_path)
+        if 'train' in data_path_filter_name:
+            data_split = 'train'
+        elif 'val' in data_path_filter_name:
+            data_split = 'val'
+        elif 'test' in data_path_filter_name:
+            data_split = 'test'
+        else:
+            data_split = 'feats'
+        if 'cnn-dailymail' in FLAGS.data_path:
+            inst_per_file = 1000
+        else:
+            inst_per_file = 1
+        filelist = glob.glob(FLAGS.data_path)
+        pbar = tqdm(initial=0, total=inst_per_file*len(filelist))
+
+        t0 = time.time()
+        instances = []
+        counter = 0
+        file_counter = 0
+        while True:
+            # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
+            # print("Results_dict: ", results_dict)
+            # print "Batcher num batches", self._batcher._batch_queue.qsize()
+            batch = self._batcher.next_batch()	# 1 example repeated across batch
+            # if counter != 21:
+            #     counter += 1
+            #     continue
+            if counter >= 10000:
+                instances = np.stack(instances)
+                instances
+                save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
+                np.savez_compressed(os.path.join(save_path), instances)
+                print('Saved features at %s' % save_path)
+                return
+                # instances = []
+                # counter = 0
+                # file_counter += 1
+
+            if batch is None: # finished decoding dataset in single_pass mode
+                assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
+                tf.logging.info("Decoder has finished reading dataset for single_pass.")
+                pbar.close()
+                if len(instances) > 0:
+                    instances = np.stack(instances)
+                    save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
+                    np.savez_compressed(os.path.join(save_path), instances)
+                    tqdm.write('Saved features at %s' % save_path)
+                return
+
+
+            batch_enc_states, _ = self._model.run_encoder(self._sess, batch)
+            for batch_idx, enc_states in enumerate(batch_enc_states):
+                art_oovs = batch.art_oovs[batch_idx]
+                all_original_abstracts_sents = batch.all_original_abstracts_sents[batch_idx]
+
+                tokenizer = Tokenizer('english')
+                # List of lists of words
+                enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
+                    batch.enc_batch_extend_vocab[batch_idx], tokenizer, art_oovs, self._vocab, batch.doc_indices[batch_idx],
+                    True, FLAGS.chunk_size)
+                if enc_sentences is None and enc_tokens is None:    # indicates there was a problem getting the sentences
+                    continue
+
+                sent_indices = enc_sent_indices
+                sent_lens, sent_reps, cluster_representation = importance_features.get_importance_features_for_article(enc_states, enc_sentences, use_cluster_dist=FLAGS.use_cluster_dist)
+                y = importance_features.get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
+
+                for i in range(len(sent_indices)):
+                    if FLAGS.use_cluster_dist:
+                        cluster_rep_i = [cluster_representation[i]]
+                    else:
+                        cluster_rep_i = cluster_representation
+                    # Keep all sentences with importance above threshold. All others will be kept with a probability of prob_to_keep
+                    if FLAGS.no_balancing or y[i] >= threshold or np.random.random() <= prob_to_keep:
+                        inst = np.concatenate([[sent_indices[i]], [sent_lens[i]], sent_reps[i], cluster_rep_i, [y[i]]])
+                        instances.append(inst)
+                # self.write_for_rouge
+                # print 'Example %d features processed' % counter
+                        counter += 1 # this is how many examples we've decoded
+            pbar.update(len(batch_enc_states))
+
+
 
 
 def print_results(article, abstract, decoded_output):

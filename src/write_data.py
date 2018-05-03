@@ -137,8 +137,9 @@ def stanford_corenlp_tokenize(text):
 
 def is_quote(tokens):
     contains_quotation_marks = "''" in tokens and len(tokens) > 0 and tokens[0] == "``"
-    contains_says = "says" in tokens or "said" in tokens
-    decision = contains_quotation_marks and contains_says
+    doesnt_end_with_period = len(tokens) > 0 and tokens[-1] != "."
+    # contains_says = "says" in tokens or "said" in tokens
+    decision = contains_quotation_marks or doesnt_end_with_period
     if decision:
         print "Skipping quote: ", ' '.join(tokens)
     return decision
@@ -215,7 +216,7 @@ else:
                     tokenized_sent = [fix_bracket_token(token) for token in tokenized_sent]
                     sent = ' '.join(tokenized_sent)
                     article += sent + ' '
-            return article
+            return article, None
         else:
             if FLAGS.use_TAC:
                 multidoc_dir = os.path.join(article_dir, multidoc_dirname, multidoc_dirname + '-A')
@@ -224,7 +225,8 @@ else:
 
             doc_names = sorted(os.listdir(multidoc_dir))
             article = ''
-            for doc_name in doc_names:
+            doc_indices = ''
+            for doc_idx, doc_name in enumerate(doc_names):
                 if 'ENG' in doc_name or not FLAGS.use_TAC:
                     doc_path = os.path.join(multidoc_dir, doc_name)
                     with open(doc_path) as f:
@@ -242,6 +244,10 @@ else:
                             for sent in sentences:
                                 sentence_text = ' '.join(sent)
                                 article += sentence_text + ' '
+
+                                doc_indices_for_tokens = [doc_idx] * len(sent)
+                                doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                                doc_indices += doc_indices_str + ' '
                         else:
                             sentences = nltk.tokenize.sent_tokenize(contents)
                             if not FLAGS.full_article:
@@ -254,6 +260,10 @@ else:
                                     continue
                                 sent = ' '.join(tokenized_sent)
                                 article += sent + ' '
+
+                                doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
+                                doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                                doc_indices += doc_indices_str + ' '
                     else:
                         contents = soup.findAll('text')[0].renderContents().replace('\n', ' ').strip()
                         contents = ' '.join(contents.split())
@@ -264,6 +274,10 @@ else:
                             for sent in sentences:
                                 sentence_text = ' '.join(sent)
                                 article += sentence_text + ' '
+
+                                doc_indices_for_tokens = [doc_idx] * len(sent)
+                                doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                                doc_indices += doc_indices_str + ' '
                         else:
                             sentences = nltk.tokenize.sent_tokenize(contents)
                             if not FLAGS.full_article:
@@ -276,10 +290,14 @@ else:
                                     continue
                                 sent = ' '.join(tokenized_sent)
                                 article += sent + ' '
-            return article
+
+                                doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
+                                doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                                doc_indices += doc_indices_str + ' '
+            return article, doc_indices
 
     def get_article_abstract(multidoc_dirname, article_dir, abstract_dir):
-        article = get_article(multidoc_dirname, is_single_doc=FLAGS.for_clustering_single_doc)
+        article, doc_indices = get_article(multidoc_dirname, is_single_doc=FLAGS.for_clustering_single_doc)
         #                 article += '<s> ' + sent + ' </s> '
         abstracts = []
         doc_num = ''.join([s for s in multidoc_dirname if s.isdigit()])
@@ -305,13 +323,15 @@ else:
             abstract = abstract.encode('utf-8').strip()
             abstracts.append(abstract)
         article = article.encode('utf-8').strip()
-        return article, abstracts
+        return article, abstracts, doc_indices
 
-    def write_example(article, abstracts, writer):
+    def write_example(article, abstracts, doc_indices, writer):
         tf_example = example_pb2.Example()
         tf_example.features.feature['article'].bytes_list.value.extend([article])
         for abstract in abstracts:
             tf_example.features.feature['abstract'].bytes_list.value.extend([abstract])
+        if doc_indices is not None:
+            tf_example.features.feature['doc_indices'].bytes_list.value.extend([doc_indices])
         tf_example_str = tf_example.SerializeToString()
         str_len = len(tf_example_str)
         writer.write(struct.pack('q', str_len))
@@ -320,9 +340,9 @@ else:
     multidoc_dirnames = sorted(os.listdir(article_dir))
     out_idx = 1
     for multidoc_dirname in multidoc_dirnames:
-        article, abstracts = get_article_abstract(multidoc_dirname, article_dir, abstract_dir)
+        article, abstracts, doc_indices = get_article_abstract(multidoc_dirname, article_dir, abstract_dir)
         with open(os.path.join(out_dir, 'test_{:03d}.bin'.format(out_idx)), 'wb') as writer:
-            write_example(article, abstracts, writer)
+            write_example(article, abstracts, doc_indices, writer)
         out_idx += 1
     
     

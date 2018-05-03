@@ -195,8 +195,8 @@ do unigram/bigram similarity? or tfidf similarity?
 maybe figure out the tau necessary to get a certain standard deviation over importance or coverage?
 
 Why do --always_squash and without, get exAct same scores?
-
-
+Why is 20 30 40 50 60 70 different now?
+Why is calc_features giving batch size of 16?
 
 
 

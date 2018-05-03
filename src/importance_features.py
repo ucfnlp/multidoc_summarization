@@ -1,173 +1,190 @@
-import tensorflow as tf
+import warnings
+
 import numpy as np
-from time import time
-import os
-from data import Vocab
-from batcher import Batcher
-from model import SummarizationModel
-from decode import BeamSearchDecoder
-import util
-from tensorflow.python import debug as tf_debug
-from tqdm import tqdm
-from tqdm import trange
+import itertools
+import util, data
+from sklearn.metrics.pairwise import cosine_similarity
 
 
-FLAGS = tf.app.flags.FLAGS
+def get_importance_features_for_article(enc_states, enc_sentences, use_cluster_dist=False):
 
+    # sent_indices = list(range(len(enc_sentences)))
+    sent_lens = [len(sent) for sent in enc_sentences]
+    sent_reps = get_sent_representations(enc_states, enc_sentences)
+    # cluster_representation = get_fw_bw_rep(enc_states, 0, len(enc_states)-1)
+    if use_cluster_dist:
+        cluster_mean = np.mean(sent_reps, axis=0)
+        cluster_representation = cosine_similarity(sent_reps, cluster_mean.reshape(1,-1))
+        cluster_representation = np.squeeze(cluster_representation)
+    else:
+        cluster_representation = np.mean(sent_reps, axis=0)
+    assert len(sent_lens) == len(sent_reps)
+    # assert len(sent_indices) == len(sent_reps)
+    return sent_lens, sent_reps, cluster_representation
 
-# Where to find data
-tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
-tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
+def get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, vocab, enc_tokens):
+    human_tokens = get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab)  # list (of 4 human summaries) of list of token ids
+    # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
+    similarity_matrix = util.Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens)
+    importances_hat = np.sum(similarity_matrix, 1)
+    logan_importances = special_squash(importances_hat)
+    return logan_importances
 
-# Important settings
-tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode')
-tf.app.flags.DEFINE_boolean('single_pass', True, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
-
-# Where to save output
-tf.app.flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
-
-# Hyperparameters
-tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
-tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
-tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
-tf.app.flags.DEFINE_integer('max_enc_steps', 10000, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 120, 'max timesteps of decoder (max summary tokens)')
-tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
-tf.app.flags.DEFINE_integer('min_dec_steps', 100, 'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
-tf.app.flags.DEFINE_integer('vocab_size', 50000, 'Size of vocabulary. These will be read from the vocabulary file in order. If the vocabulary file contains fewer words than this number, or if this number is set to 0, will take all words in the vocabulary file.')
-tf.app.flags.DEFINE_float('lr', 0.15, 'learning rate')
-tf.app.flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value for Adagrad')
-tf.app.flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
-tf.app.flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
-tf.app.flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
-
-# Pointer-generator or baseline model
-tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
-
-# Coverage hyperparameters
-tf.app.flags.DEFINE_boolean('coverage', False, 'Use coverage mechanism. Note, the experiments reported in the ACL paper train WITHOUT coverage until converged, and then train for a short phase WITH coverage afterwards. i.e. to reproduce the results in the ACL paper, turn this off for most of training then turn on for a short phase at the end.')
-tf.app.flags.DEFINE_float('cov_loss_wt', 1.0, 'Weight of coverage loss (lambda in the paper). If zero, then no incentive to minimize coverage loss.')
-
-# Utility flags, for restoring and changing checkpoints
-tf.app.flags.DEFINE_boolean('convert_to_coverage_model', False, 'Convert a non-coverage model to a coverage model. Turn this on and run in train mode. Your current training model will be copied to a new version (same name with _cov_init appended) that will be ready to run with coverage flag turned on, for the coverage training stage.')
-tf.app.flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model in the eval/ dir and save it in the train/ dir, ready to be used for further training. Useful for early stopping, or if your training checkpoint has become corrupted with e.g. NaN values.')
-
-# Debugging. See https://www.tensorflow.org/programmers_guide/debugger
-tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
-
-# If use a pretrained model
-tf.app.flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')
-tf.app.flags.DEFINE_string('pretrained_path', '/home/logan/data/multidoc_summarization/logs/pretrained_model/train', 'Root directory for all logging.')
-
-
-
-
-def main(unused_argv):
-    start_time = time.time()
-    if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
-        raise Exception("Problem with flags: %s" % unused_argv)
-
-    tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
-    tf.logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
-
-    # Change log_root to FLAGS.log_root/FLAGS.exp_name and create the dir if necessary
-    FLAGS.log_root = os.path.join(FLAGS.log_root, FLAGS.exp_name)
-    if not os.path.exists(FLAGS.log_root):
-        if FLAGS.mode=="train":
-            os.makedirs(FLAGS.log_root)
+def get_enc_sents_and_tokens_with_cutoff_length(enc_batch_extend_vocab, tokenizer,
+                                                art_oovs, vocab, doc_indices, skip_failures, chunk_size=-1, cutoff_len=1000000):
+    art_oovs = [s.replace(' ', '_') for s in art_oovs]
+    enc_text = tokens_to_continuous_text(enc_batch_extend_vocab, vocab, art_oovs)
+    if chunk_size == -1:
+        all_enc_sentences = tokenizer.to_sentences(enc_text)
+        all_tokens = flatten_list_of_lists([sent.split(' ') for sent in all_enc_sentences])
+    else:
+        all_tokens = enc_text.split(' ')
+        chunked_tokens = chunk_tokens(all_tokens, chunk_size)
+        all_enc_sentences = [' '.join(chunk) for chunk in chunked_tokens]
+    if len(all_tokens) != len(enc_batch_extend_vocab):
+        if skip_failures:
+            return None, None, None
         else:
-            if not FLAGS.use_pretrained:
-                raise Exception("Logdir %s doesn't exist. Run in train mode to create it." % (FLAGS.log_root))
-
-    vocab = Vocab(FLAGS.vocab_path, FLAGS.vocab_size) # create a vocabulary
-
-    # If in decode mode, set batch_size = beam_size
-    # Reason: in decode mode, we decode one example at a time.
-    # On each step, we have beam_size-many hypotheses in the beam, so we need to make a batch of these hypotheses.
-    if FLAGS.mode == 'decode':
-        FLAGS.batch_size = FLAGS.beam_size
-
-    # If single_pass=True, check we're in decode mode
-    if FLAGS.single_pass and FLAGS.mode!='decode':
-        raise Exception("The single_pass flag should only be True in decode mode")
-
-    # Make a namedtuple hps, containing the values of the hyperparameters that the model needs
-    hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen']
-    hps_dict = {}
-    for key,val in FLAGS.__flags.iteritems(): # for each flag
-        if key in hparam_list: # if it's in the list
-            hps_dict[key] = val # add it to the dict
-    hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
-
-    # Create a batcher object that will create minibatches of data
-    batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
-
-    tf.set_random_seed(111) # a seed value for randomness
-
-    if hps.mode == 'train':
-        print "creating model..."
-        model = SummarizationModel(hps, vocab)
-        setup_training(model, batcher)
-    elif hps.mode == 'eval':
-        model = SummarizationModel(hps, vocab)
-        run_eval(model, batcher, vocab)
-    elif hps.mode == 'decode':
-        decode_model_hps = hps	# This will be the hyperparameters for the decoder model
-        decode_model_hps = hps._replace(max_dec_steps=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
-        model = SummarizationModel(decode_model_hps, vocab)
-        decoder = BeamSearchDecoder(model, batcher, vocab)
+            warnings.warn('All_tokens ('+str(len(all_tokens))+
+                        ') does not have the same number of tokens as enc_batch ('+str(len(enc_batch_extend_vocab))+')')
+    select_enc_sentences = []
+    select_enc_tokens = []
+    select_sent_indices = []
+    count = 0
+    cur_doc_idx = 0
+    cur_sent_idx = 0
+    for sent_idx, sent in enumerate(all_enc_sentences):
+        sent_to_add = []
+        tokens_to_add = []
+        should_break = False
+        tokens = sent.split(' ')
+        if cur_doc_idx != doc_indices[count]:
+            cur_doc_idx = doc_indices[count]
+            cur_sent_idx = 0
+        select_sent_indices.append(cur_sent_idx)
+        for word_idx, word in enumerate(tokens):
+            sent_to_add.append(word)
+            tokens_to_add.append(enc_batch_extend_vocab[count])
+            count += 1
+            if count == cutoff_len:
+                should_break = True
+                break
+        select_enc_sentences.append(sent_to_add)
+        select_enc_tokens.append(tokens_to_add)
+        cur_sent_idx += 1
+        if should_break:
+            break
+    return select_enc_sentences, select_enc_tokens, select_sent_indices
 
 
+def get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab):
+    def get_all_summ_tokens(all_summs):
+        return [get_summ_tokens(summ) for summ in all_summs]
+    def get_summ_tokens(summ):
+        summ_tokens = [get_sent_tokens(sent) for sent in summ]
+        return list(itertools.chain.from_iterable(summ_tokens))     # combines all sentences into one list of tokens for summary
+    def get_sent_tokens(sent):
+        words = sent.split()
+        return data.abstract2ids(words, vocab, art_oovs)
+    human_summaries = all_original_abstracts_sents
+    all_summ_tokens = get_all_summ_tokens(human_summaries)
+    return all_summ_tokens
 
-
-
-        # import struct
-        # from tensorflow.core.example import example_pb2
-        # from gensim.models import KeyedVectors
-        #
-        # embedding_file = '/home/logan/data/multidoc_summarization/GoogleNews-vectors-negative300.bin'
-        # input_file = '/home/logan/data/multidoc_summarization/TAC_Data/logans_test/test_001.bin'
-        #
-        # # Load pretrained model (since intermediate data is not included, the model cannot be refined with additional data)
-        # model = KeyedVectors.load_word2vec_format(embedding_file, binary=True)
-        #
-        # dog = model['dog']
-        # print(dog.shape)
-        # print(dog[:10])
-        #
-        # reader = open(input_file, 'rb')
-        # while True:
-        #     len_bytes = reader.read(8)
-        #     if not len_bytes: break  # finished reading this file
-        #     str_len = struct.unpack('q', len_bytes)[0]
-        #     example_str = struct.unpack('%ds' % str_len, reader.read(str_len))[0]
-        #     example = example_pb2.Example.FromString(example_str)
-
-
-
-
-
-
-
-        decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
+def special_squash(distribution):
+    res = distribution - np.min(distribution)
+    if np.max(res) == 0:
+        print('All elements in distribution are 0, so setting all to 0')
+        res.fill(0)
     else:
-        raise ValueError("The 'mode' flag must be one of train/eval/decode")
+        res = res / np.max(res)
+    return res
 
-    localtime = time.asctime( time.localtime(time.time()) )
-    print ("Finished at: ", localtime)
-    time_taken = time.time() - start_time
-    if time_taken < 60:
-        print('Execution time: ', time_taken, ' sec')
-    elif time_taken < 3600:
-        print('Execution time: ', time_taken/60., ' min')
-    else:
-        print('Execution time: ', time_taken/3600., ' hr')
+def get_sent_representations(enc_states, enc_sentences):
+    sent_positions = get_sentence_splits(enc_sentences)
+    sent_representations = get_fw_bw_sent_reps(enc_states, sent_positions)
 
-if __name__ == '__main__':
-    try:
-        tf.app.run()
-    except util.InfinityValueError as e:
-        sys.exit(100)
-    except:
-        raise
+    return sent_representations
+
+def tokens_to_continuous_text(tokens, vocab, art_oovs):
+    words = data.outputids2words(tokens, vocab, art_oovs)
+    text = ' '.join(words)
+    # text = text.decode('utf8')
+    split_text = text.split(' ')
+    if len(split_text) != len(words):
+        for i in range(min(len(words), len(split_text))):
+            try:
+                print '%s\t%s'%(words[i], split_text[i])
+            except:
+                print 'FAIL\tFAIL'
+        raise Exception('text ('+str(len(text.split()))+
+                        ') does not have the same number of tokens as words ('+str(len(words))+')')
+
+    return text
+
+def chunk_tokens(tokens, chunk_size):
+    chunk_size = max(1, chunk_size)
+    return (tokens[i:i+chunk_size] for i in xrange(0, len(tokens), chunk_size))
+
+def flatten_list_of_lists(list_of_lists):
+    return list(itertools.chain.from_iterable(list_of_lists))
+
+# def get_enc_sents(enc_batch_extend_vocab, tokenizer,
+#                                                 art_oovs, vocab, chunk_size=-1):
+#     art_oovs = [s.replace(' ', '_') for s in art_oovs]
+#     enc_text = tokens_to_continuous_text(enc_batch_extend_vocab, vocab, art_oovs)
+#     if chunk_size == -1:
+#         all_enc_sentences = tokenizer.to_sentences(enc_text)
+#         all_tokens = flatten_list_of_lists([sent.split(' ') for sent in all_enc_sentences])
+#     else:
+#         all_tokens = enc_text.split()
+#         chunked_tokens = chunk_tokens(all_tokens, chunk_size)
+#         all_enc_sentences = [' '.join(chunk) for chunk in chunked_tokens]
+#     if len(all_tokens) != len(enc_batch_extend_vocab):
+#         # print 'Art_oovs', art_oovs
+#         warnings.warn('All_tokens ('+str(len(all_tokens))+
+#                         ') does not have the same number of tokens as enc_batch ('+str(len(enc_batch_extend_vocab))+').' +
+#                       'Skipping')
+#         return None, None
+#     tokenized_sentences = [sent.split(' ') for sent in all_enc_sentences]
+#
+#     enc_tokens = []
+#     count = 0
+#     for sent_idx, sent in enumerate(tokenized_sentences):
+#         sent_to_add = []
+#         tokens_to_add = []
+#         for word_idx, word in enumerate(sent):
+#             tokens_to_add.append(enc_batch_extend_vocab[count])
+#             count += 1
+#         enc_tokens.append(tokens_to_add)
+#     return tokenized_sentences, enc_tokens
+
+def get_sentence_splits(enc_sentences):
+    '''Returns a list of indices, representing the word index for the first word of each sentence'''
+    cur_idx = 0
+    indices = []
+    for sent in enc_sentences:
+        indices.append(cur_idx)
+        cur_idx += len(sent)
+    return indices
+
+def get_fw_bw_rep(enc_states, start_idx, end_idx):
+    fw_state_size = enc_states.shape[1] / 2
+    assert fw_state_size * 2 == enc_states.shape[1]
+    fw_sent_rep = enc_states[end_idx, :fw_state_size]
+    bw_sent_rep = enc_states[start_idx, fw_state_size:]
+    rep = np.concatenate([fw_sent_rep, bw_sent_rep])
+    return rep
+
+
+def get_fw_bw_sent_reps(enc_states, sent_positions):
+    reps = []
+    for idx in range(len(sent_positions)):
+        start_idx = sent_positions[idx]
+        if idx+1 < len(sent_positions):
+            end_idx = sent_positions[idx+1]-1
+        else:
+            end_idx = enc_states.shape[0]-1
+        rep = get_fw_bw_rep(enc_states, start_idx, end_idx)
+        reps.append(rep)
+    reps = np.stack(reps)
+    return reps
