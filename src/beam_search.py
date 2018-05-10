@@ -16,6 +16,8 @@
 
 """This file contains code to run beam search decoding"""
 import cPickle
+import warnings
+
 import tensorflow as tf
 import numpy as np
 import os
@@ -38,6 +40,9 @@ from sumy.parsers.plaintext import PlaintextParser
 import util
 from util import Similarity_Functions
 import importance_features
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.stem.porter import PorterStemmer
+import dill
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -110,14 +115,6 @@ def softmax(x):
     scoreMatExp = np.exp(np.asarray(x))
     return scoreMatExp / np.expand_dims(scoreMatExp.sum(-1), -1)
 
-def chunks(chunkable, n):
-    """ Yield successive n-sized chunks from l.
-    """
-    chunk_list = []
-    for i in xrange(0, len(chunkable), n):
-        chunk_list.append( chunkable[i:i+n])
-    return chunk_list
-
 def plot_importances(article_sents, importances, abstracts_text, save_location=None, save_name=None):
     if save_location is not None:
         plt.ioff()
@@ -125,8 +122,8 @@ def plot_importances(article_sents, importances, abstracts_text, save_location=N
     sents_per_figure = 40
     num_sents = len(importances)
     max_importance = np.max(importances)
-    chunked_sents = chunks(article_sents, sents_per_figure)
-    chunked_importances = chunks(importances, sents_per_figure)
+    chunked_sents = util.chunks(article_sents, sents_per_figure)
+    chunked_importances = util.chunks(importances, sents_per_figure)
 
     for chunk_idx in range(len(chunked_sents)):
         my_article_sents = chunked_sents[chunk_idx]
@@ -178,13 +175,6 @@ def plot_importances(article_sents, importances, abstracts_text, save_location=N
         plt.close(fig)
     else:
         plt.show()
-
-def chunk_tokens(tokens, chunk_size):
-    chunk_size = max(1, chunk_size)
-    return (tokens[i:i+chunk_size] for i in xrange(0, len(tokens), chunk_size))
-
-def flatten_list_of_lists(list_of_lists):
-    return list(itertools.chain.from_iterable(list_of_lists))
 
 
 def get_sentences_embeddings(enc_sentences, enc_tokens, sess, batch, vocab):
@@ -244,7 +234,7 @@ def get_summ_sents_and_tokens(summ_tokens, tokenizer, batch, vocab, chunk_size=-
             sentences = sentences[:len(sentences) - 1]  # Doesn't include the last sentence if incomplete (no period)
     else:
         all_tokens = summ_str.strip().split(' ')
-        chunked_tokens = chunk_tokens(all_tokens, chunk_size)
+        chunked_tokens = util.chunk_tokens(all_tokens, chunk_size)
         sentences = [' '.join(chunk) for chunk in chunked_tokens]
         if len(sentences[-1]) < chunk_size:
             sentences = sentences[:len(sentences) - 1]
@@ -260,24 +250,25 @@ def get_summ_sents_and_tokens(summ_tokens, tokenizer, batch, vocab, chunk_size=-
     return sent_words, sent_tokens
 
 def get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings,
-                                    summ_words_embs_list, summ_tokens):
+                                    summ_words_embs_list, summ_tokens, vocab):
     if len(summ_embeddings) == 0:
         return np.zeros([len(enc_sentences)], dtype=float) / len(enc_sentences)
     else:
-        normalization_fn = l1_normalize
+        # normalization_fn = l1_normalize
         importances_hat = Similarity_Functions.get_similarity(enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings[-1:],
-                                                    summ_words_embs_list[-1:], summ_tokens[-1:], FLAGS.similarity_fn)
-        importances = normalization_fn(importances_hat)
+                                                    summ_words_embs_list[-1:], summ_tokens[-1:], FLAGS.similarity_fn, vocab)
+        # importances = normalization_fn(importances_hat)
+        importances = importances_hat
         return importances
 
-def get_coverage(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings, summ_words_embs_list, summ_tokens):
+def get_coverage(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings, summ_words_embs_list, summ_tokens, vocab):
     if len(summ_embeddings) == 0:
         return np.ones([len(enc_sentences)], dtype=float) / len(enc_sentences), np.zeros([len(enc_sentences)], dtype=float) / len(enc_sentences)
     else:
         # Calculate similarity matrix [num_sentences_encoder, num_sentences_summary]
         normalization_fn = l1_normalize
         importances_hat = Similarity_Functions.get_similarity(enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings,
-                                                    summ_words_embs_list, summ_tokens, FLAGS.similarity_fn)
+                                                    summ_words_embs_list, summ_tokens, FLAGS.similarity_fn, vocab)
         importances = normalization_fn(importances_hat)
         uncovered_amount_hat = max(importances_hat) - importances_hat
         uncovered_amount = normalization_fn(uncovered_amount_hat)
@@ -326,9 +317,13 @@ def save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_em
         cur_summ_tokens = summ_tokens[:sent_idx]
         summ_str = ' '.join([' '.join(sent) for sent in cur_summ_sents])
         uncovered_amount, _ = get_coverage(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
-                                        cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens)
-        similarity_amount = get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
-                                        cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens)
+                                        cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens, vocab)
+        if FLAGS.subtract_from_original_importance:
+            similarity_amount = Similarity_Functions.get_similarity(enc_sent_embs, enc_words_embs_list, enc_tokens,
+                                        cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens, FLAGS.similarity_fn, vocab)
+        else:
+            similarity_amount = get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
+                                        cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens, vocab)
         if FLAGS.logan_coverage:
             if FLAGS.logan_importance:                  # if both sentence-level options are on
                 beta_for_sentences = combine_coverage_and_importance(uncovered_amount, logan_importances)
@@ -402,12 +397,14 @@ def calc_beta_from_sim_and_imp(logan_similarity, logan_importances, prev_beta, b
     # new_beta = prev_beta - to_subtract
     # new_beta = np.maximum([0], new_beta)
     # return new_beta
-
-    if FLAGS.always_squash:
-        new_beta = special_squash(prev_beta) - special_squash(logan_similarity)
+    if FLAGS.subtract_from_original_importance:
+        new_beta =  FLAGS.lambda_val*logan_importances - (1-FLAGS.lambda_val)*logan_similarity
     else:
-        new_beta = prev_beta - special_squash(logan_similarity)
-    # new_beta = prev_beta - logan_similarity
+        if FLAGS.always_squash:
+            new_beta = special_squash(prev_beta) - special_squash(logan_similarity)
+        else:
+            new_beta = FLAGS.lambda_val*prev_beta - (1-FLAGS.lambda_val)*logan_similarity
+        # new_beta = prev_beta - logan_similarity
     new_beta = np.maximum(new_beta, 0)
     return new_beta
 
@@ -440,21 +437,57 @@ def get_tokens_for_human_summaries(batch, vocab):
     all_summ_tokens = get_all_summ_tokens(human_summaries)
     return all_summ_tokens
 
-def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model):
+def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model, tokenizer, sent_representations_separate):
     sent_indices = enc_sent_indices
-    sent_lens, sent_reps, cluster_representation = importance_features.get_importance_features_for_article(
-        enc_states, enc_sentences, use_cluster_dist=FLAGS.use_cluster_dist)
-    if FLAGS.use_cluster_dist:
-        cluster_representations = np.expand_dims(cluster_representation, 1)
-    else:
-        cluster_representations = np.tile(cluster_representation, [len(sent_indices), 1])
-    x = np.concatenate([np.expand_dims(sent_indices, 1), np.expand_dims(sent_lens, 1), sent_reps, cluster_representations], 1)
+    sent_reps = importance_features.get_importance_features_for_article(
+        enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate, use_cluster_dist=FLAGS.use_cluster_dist)
+    features_list = importance_features.get_features_list(False)
+    x = importance_features.features_to_array(sent_reps, features_list)
+    # if FLAGS.use_cluster_dist:
+    #     cluster_representations = np.expand_dims(cluster_rep, 1)
+    # else:
+    #     cluster_representations = np.tile(cluster_rep, [len(sent_indices), 1])
+    # feature_list = []
+    # if not FLAGS.normalize_features:
+    #     feature_list.append(np.expand_dims(abs_sent_indices, 1))
+    # feature_list.append(np.expand_dims(rel_sent_indices, 1))
+    # feature_list.append(np.expand_dims(sent_lens, 1))
+    # feature_list.append(sent_reps)
+    # feature_list.append(cluster_representations)
+    # if FLAGS.lexrank_as_feature:
+    #     feature_list.append(np.expand_dims(lexrank_score, 1))
+    # x = np.concatenate(feature_list, 1)
+    # # x = np.concatenate([np.expand_dims(abs_sent_indices, 1), np.expand_dims(rel_sent_indices, 1),
+    # #                     np.expand_dims(sent_lens, 1), np.expand_dims(lexrank_score, 1), sent_reps,
+    # #                     cluster_representations], 1)
     importances = svr_model.predict(x)
     return importances
 
+def save_sorted_sentences(logan_importances, raw_article_sents, ex_index):
+    ranked_sent_indices = np.argsort(logan_importances)[::-1]
+    if len(ranked_sent_indices) != len(raw_article_sents):
+        warnings.warn('len(ranked_sent_indices) (%d) != len(raw_article_sents) (%d)' % ( len(ranked_sent_indices), len(raw_article_sents)))
+    ranked_sents = [raw_article_sents[idx] for idx in ranked_sent_indices]
+    output_str = '\n'.join(ranked_sents)
+    ranked_sent_path = os.path.join(FLAGS.log_root, 'ordered_sentences')
+    if not os.path.exists(ranked_sent_path):
+        os.makedirs(ranked_sent_path)
+    with open(os.path.join(ranked_sent_path, 'test_%03d.txt' % ex_index), 'wb') as f:
+        f.write(output_str)
+
+def get_tfidf_importances(raw_article_sents):
+    tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
+
+    with open(tfidf_model_path, 'rb') as f:
+        tfidf_vectorizer = dill.load(f)
+    sent_reps = tfidf_vectorizer.transform(raw_article_sents)
+    cluster_rep = np.mean(sent_reps, axis=0)
+    similarity_matrix = cosine_similarity(sent_reps, cluster_rep)
+    return np.squeeze(similarity_matrix)
 
 
-def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=None):
+
+def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_steps=None):
     """Performs beam search decoding on the given example.
 
     Args:
@@ -484,41 +517,50 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
 
 
     if FLAGS.importance_fn == 'svr':
-        with open(os.path.join(FLAGS.importance_model_path), 'rb') as f:
+        with open(os.path.join(FLAGS.log_root, '..', FLAGS.importance_model_name + '.pickle'), 'rb') as f:
             svr_model = cPickle.load(f)
     tokenizer = Tokenizer('english')
 
-    enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
-                    batch.enc_batch_extend_vocab[0], tokenizer, batch.art_oovs[0], vocab, batch.doc_indices[0],
-                    False, chunk_size=FLAGS.chunk_size, cutoff_len=FLAGS.max_enc_steps)
+    # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
+    #                 batch.enc_batch_extend_vocab[0], tokenizer, batch.art_oovs[0], vocab, batch.doc_indices[0],
+    #                 False, chunk_size=FLAGS.chunk_size, cutoff_len=FLAGS.max_enc_steps)
+    enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
+    enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
     enc_sent_embs, enc_words_embs_list, enc_words_list = get_sentences_embeddings(enc_sentences, enc_tokens,
                                                                                             sess, batch, vocab)
+    sent_representations_separate = importance_features.get_separate_enc_states(model, sess, enc_sentences, vocab, hps)
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
 
 
     if FLAGS.logan_importance:
-        if FLAGS.oracle:
+        if FLAGS.importance_fn == 'oracle':
             human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
             # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
-            similarity_matrix = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens)
-            importances_hat = np.sum(similarity_matrix, 1)
-            logan_importances = special_squash(importances_hat)
-        else:
-            if FLAGS.importance_fn == 'lex_rank':
-                summarizer = LexRankSummarizer()
-                logan_importances = summarizer.get_importances(enc_sentences, tokenizer)
-            elif FLAGS.importance_fn == 'svr':
-                logan_importances = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model)
-            logan_importances = special_squash(logan_importances)
+            metric = 'recall' if FLAGS.rouge_l_prec_rec else 'f1'
+            # similarity_matrix = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, metric=metric)
+            # importances_hat = np.sum(similarity_matrix, 1)
+            importances_hat = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
+            # logan_importances = importances_hat
+        elif FLAGS.importance_fn == 'lex_rank':
+            summarizer = LexRankSummarizer()
+            importances_hat = summarizer.get_importances(enc_sentences, tokenizer)
+        elif FLAGS.importance_fn == 'svr':
+            importances_hat = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model, tokenizer, sent_representations_separate)
+        elif FLAGS.importance_fn == 'tfidf':
+            importances_hat = get_tfidf_importances(batch.raw_article_sents[0])
+        logan_importances = special_squash(importances_hat)
         # plot_importances(enc_sentences_str, logan_importances, 'n/a')
         if FLAGS.logan_importance_tau != 1.0:
             logan_importances = softmax_trick(logan_importances, FLAGS.logan_importance_tau)
+
+        save_sorted_sentences(logan_importances, batch.raw_article_sents[0], ex_index)
     else:
         logan_importances = None
 
     if FLAGS.logan_reservoir:
         logan_similarity = np.zeros([FLAGS.beam_size, len(enc_sentences)], dtype=float)
-        beta_init = special_squash(logan_importances)
+        # beta_init = special_squash(logan_importances)
+        beta_init = logan_importances
     elif FLAGS.logan_coverage:
         # Initial coverage (evenly distributed among all sentences)
         logan_coverage = np.ones([FLAGS.beam_size, len(enc_sentences)], dtype=float) / len(enc_sentences)
@@ -526,7 +568,6 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
     else:
         logan_coverage = None
         beta_init = logan_importances
-
 
 
     # Initialize beam_size-many hyptheses
@@ -615,8 +656,12 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
                     summ_embeddings, summ_words_embs_list, summ_words_list = get_sentences_embeddings(summ_sents, summ_tokens,
                                                                                                       sess, batch, vocab)
                     summ_str = ' '.join([' '.join(sent) for sent in summ_sents])
-                    similarity_amount = get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
-                                                    summ_embeddings, summ_words_embs_list, summ_tokens)
+                    if FLAGS.subtract_from_original_importance:
+                        similarity_amount = Similarity_Functions.get_similarity(enc_sent_embs, enc_words_embs_list, enc_tokens,
+                                                    summ_embeddings, summ_words_embs_list, summ_tokens, FLAGS.similarity_fn, vocab)
+                    else:
+                        similarity_amount = get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
+                                                    summ_embeddings, summ_words_embs_list, summ_tokens, vocab)
                     # plot_importances(enc_sentences_str, importances, summ_str)
                     logan_similarity[hyp_idx] = similarity_amount
                     a = 0
@@ -636,7 +681,7 @@ def run_beam_search(sess, model, vocab, batch, ex_index, specific_max_dec_steps=
                                                                                                       sess, batch, vocab)
                     summ_str = ' '.join([' '.join(sent) for sent in summ_sents])
                     uncovered_amount, similarity_amount = get_coverage(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
-                                                    summ_embeddings, summ_words_embs_list, summ_tokens)
+                                                    summ_embeddings, summ_words_embs_list, summ_tokens, vocab)
                     # plot_importances(enc_sentences_str, importances, summ_str)
                     logan_coverage[hyp_idx] = uncovered_amount
                     a = 0

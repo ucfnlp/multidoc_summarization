@@ -23,12 +23,14 @@ import time
 import numpy as np
 import tensorflow as tf
 import data
-
+import nltk
+from write_data import process_sent
+import util
 
 class Example(object):
     """Class representing a train/val/test example for text summarization."""
 
-    def __init__(self, article, abstract_sentences, all_abstract_sentences, doc_indices, vocab, hps):
+    def __init__(self, article, abstract_sentences, all_abstract_sentences, doc_indices, raw_article_sents, vocab, hps):
         """Initializes the Example, performing tokenization and truncation to produce the encoder, decoder and target sequences, which are stored in self.
 
         Args:
@@ -43,11 +45,11 @@ class Example(object):
         start_decoding = vocab.word2id(data.START_DECODING)
         stop_decoding = vocab.word2id(data.STOP_DECODING)
 
+
         # Process the article
         article_words = article.split()
         if len(article_words) > hps.max_enc_steps:
             article_words = article_words[:hps.max_enc_steps]
-        self.enc_len = len(article_words) # store the length after truncation but before padding
         self.enc_input = [vocab.word2id(w) for w in article_words] # list of word ids; OOVs are represented by the id for UNK token
 
         # Process the abstract
@@ -61,8 +63,21 @@ class Example(object):
 
         # If using pointer-generator mode, we need to store some extra info
         if hps.pointer_gen:
-            # Store a version of the enc_input where in-article OOVs are represented by their temporary OOV id; also store the in-article OOVs words themselves
-            self.enc_input_extend_vocab, self.article_oovs = data.article2ids(article_words, vocab)
+
+            if raw_article_sents is not None and len(raw_article_sents) > 0:
+                self.tokenized_sents = [process_sent(sent) for sent in raw_article_sents]
+                self.word_ids_sents, self.article_oovs = data.tokenizedarticle2ids(self.tokenized_sents, vocab)
+                self.enc_input_extend_vocab = util.flatten_list_of_lists(self.word_ids_sents)
+                self.enc_len = len(self.enc_input_extend_vocab) # store the length after truncation but before padding
+            else:
+                # Store a version of the enc_input where in-article OOVs are represented by their temporary OOV id; also store the in-article OOVs words themselves
+                article_str = util.to_unicode(article)
+                raw_article_sents = nltk.tokenize.sent_tokenize(article_str)
+                self.tokenized_sents = [process_sent(sent) for sent in raw_article_sents]
+                self.word_ids_sents, self.article_oovs = data.tokenizedarticle2ids(self.tokenized_sents, vocab)
+                self.enc_input_extend_vocab = util.flatten_list_of_lists(self.word_ids_sents)
+                # self.enc_input_extend_vocab, self.article_oovs = data.article2ids(article_words, vocab)
+                self.enc_len = len(self.enc_input_extend_vocab) # store the length after truncation but before padding
 
             # Get a verison of the reference summary where in-article OOVs are represented by their temporary article OOV id
             abs_ids_extend_vocab = data.abstract2ids(abstract_words, vocab, self.article_oovs)
@@ -72,6 +87,7 @@ class Example(object):
 
         # Store the original strings
         self.original_article = article
+        self.raw_article_sents = raw_article_sents
         self.original_abstract = abstract
         self.original_abstract_sents = abstract_sentences
         self.all_original_abstract_sents = all_abstract_sentences
@@ -221,6 +237,9 @@ class Batch(object):
     def store_orig_strings(self, example_list):
         """Store the original article and abstract strings in the Batch object"""
         self.original_articles = [ex.original_article for ex in example_list] # list of lists
+        self.raw_article_sents = [ex.raw_article_sents for ex in example_list]
+        self.tokenized_sents = [ex.tokenized_sents for ex in example_list]
+        self.word_ids_sents = [ex.word_ids_sents for ex in example_list]
         self.original_abstracts = [ex.original_abstract for ex in example_list] # list of lists
         self.original_abstracts_sents = [ex.original_abstract_sents for ex in example_list] # list of list of lists
         self.all_original_abstracts_sents = [ex.all_original_abstract_sents for ex in example_list] # list of list of list of lists
@@ -305,7 +324,7 @@ class Batcher(object):
         while True:
             try:
                 (article,
-                 abstracts, doc_indices_str) = input_gen.next()  # read the next example from file. article and abstract are both strings.
+                 abstracts, doc_indices_str, raw_article_sents) = input_gen.next()  # read the next example from file. article and abstract are both strings.
             except StopIteration:  # if there are no more examples:
                 tf.logging.info("The example generator for this example queue filling thread has exhausted data.")
                 if self._single_pass:
@@ -322,7 +341,7 @@ class Batcher(object):
                 abstract)] for abstract in abstracts]
             abstract_sentences = all_abstract_sentences[0]
             doc_indices = [int(idx) for idx in doc_indices_str.strip().split()]
-            example = Example(article, abstract_sentences, all_abstract_sentences, doc_indices, self._vocab, self._hps)  # Process into an Example.
+            example = Example(article, abstract_sentences, all_abstract_sentences, doc_indices, raw_article_sents, self._vocab, self._hps)  # Process into an Example.
             self._example_queue.put(example)  # place the Example in the example queue.
             # print "example num", counter
             # counter += 1
@@ -402,6 +421,7 @@ class Batcher(object):
         while True:
             e = example_generator.next() # e is a tf.Example
             abstract_texts = []
+            raw_article_sents = []
             try:
                 article_text = e.features.feature['article'].bytes_list.value[0] # the article text was saved under the key 'article' in the data files
                 for abstract in e.features.feature['abstract'].bytes_list.value:
@@ -411,10 +431,12 @@ class Batcher(object):
                     doc_indices_text = '0 ' * num_words
                 else:
                     doc_indices_text = e.features.feature['doc_indices'].bytes_list.value[0]
+                for sent in e.features.feature['raw_article_sents'].bytes_list.value:
+                    raw_article_sents.append(sent) # the abstract text was saved under the key 'abstract' in the data files
             except ValueError:
                 tf.logging.error('Failed to get article or abstract from example')
                 continue
             if len(article_text)==0: # See https://github.com/abisee/pointer-generator/issues/1
                 tf.logging.warning('Found an example with empty article text. Skipping it.')
             else:
-                yield (article_text, abstract_texts, doc_indices_text)
+                yield (article_text, abstract_texts, doc_indices_text, raw_article_sents)

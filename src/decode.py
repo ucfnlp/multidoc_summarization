@@ -18,6 +18,8 @@
 import glob
 import os
 import time
+
+import cPickle
 import tensorflow as tf
 import beam_search
 import data
@@ -118,7 +120,7 @@ class BeamSearchDecoder(object):
                 doc_name = all_original_abstract_sents[1][0]
 
             # Run beam search to get best Hypothesis
-            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, counter, specific_max_dec_steps=specific_max_dec_steps)
+            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, counter, self._batcher._hps, specific_max_dec_steps=specific_max_dec_steps)
 
             # Extract the output ids from the hypothesis and convert back to words
             output_ids = [int(t) for t in best_hyp.tokens[1:]]
@@ -217,9 +219,9 @@ class BeamSearchDecoder(object):
             json.dump(to_write, output_file)
         tf.logging.info('Wrote visualization data to %s', output_fname)
 
-    def calc_importance_features(self):
+    def calc_importance_features(self, data_path, hps):
         """Calculate sentence-level features and save as a dataset"""
-        data_path_filter_name = os.path.basename(FLAGS.data_path)
+        data_path_filter_name = os.path.basename(data_path)
         if 'train' in data_path_filter_name:
             data_split = 'train'
         elif 'val' in data_path_filter_name:
@@ -228,16 +230,18 @@ class BeamSearchDecoder(object):
             data_split = 'test'
         else:
             data_split = 'feats'
-        if 'cnn-dailymail' in FLAGS.data_path:
+        if 'cnn-dailymail' in data_path:
             inst_per_file = 1000
         else:
             inst_per_file = 1
-        filelist = glob.glob(FLAGS.data_path)
-        pbar = tqdm(initial=0, total=inst_per_file*len(filelist))
+        filelist = glob.glob(data_path)
+        num_documents_desired = 1000
+        pbar = tqdm(initial=0, total=num_documents_desired)
 
         t0 = time.time()
         instances = []
         counter = 0
+        doc_counter = 0
         file_counter = 0
         while True:
             # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
@@ -247,11 +251,14 @@ class BeamSearchDecoder(object):
             # if counter != 21:
             #     counter += 1
             #     continue
-            if counter >= 10000:
-                instances = np.stack(instances)
-                instances
+            if doc_counter >= num_documents_desired:
+                # instances = np.stack(instances)
+                # instances = instances[:10000]
+                # save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
+                # np.savez_compressed(os.path.join(save_path), instances)
                 save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
-                np.savez_compressed(os.path.join(save_path), instances)
+                with open(save_path, 'wb') as f:
+                    cPickle.dump(instances, f)
                 print('Saved features at %s' % save_path)
                 return
                 # instances = []
@@ -277,28 +284,38 @@ class BeamSearchDecoder(object):
 
                 tokenizer = Tokenizer('english')
                 # List of lists of words
-                enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
-                    batch.enc_batch_extend_vocab[batch_idx], tokenizer, art_oovs, self._vocab, batch.doc_indices[batch_idx],
-                    True, FLAGS.chunk_size)
-                if enc_sentences is None and enc_tokens is None:    # indicates there was a problem getting the sentences
-                    continue
+                enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
+                enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
+
+                sent_representations_separate = importance_features.get_separate_enc_states(self._model, self._sess, enc_sentences, self._vocab, hps)
+                # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
+                #     batch.enc_batch_extend_vocab[batch_idx], tokenizer, art_oovs, self._vocab, batch.doc_indices[batch_idx],
+                #     True, FLAGS.chunk_size)
+                # if enc_sentences is None and enc_tokens is None:    # indicates there was a problem getting the sentences
+                #     continue
 
                 sent_indices = enc_sent_indices
-                sent_lens, sent_reps, cluster_representation = importance_features.get_importance_features_for_article(enc_states, enc_sentences, use_cluster_dist=FLAGS.use_cluster_dist)
+                sent_reps = importance_features.get_importance_features_for_article(
+                    enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate, use_cluster_dist=FLAGS.use_cluster_dist)
                 y = importance_features.get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
+                for rep_idx, rep in enumerate(sent_reps):
+                    rep.y = y[rep_idx]
 
-                for i in range(len(sent_indices)):
-                    if FLAGS.use_cluster_dist:
-                        cluster_rep_i = [cluster_representation[i]]
-                    else:
-                        cluster_rep_i = cluster_representation
+                for rep in sent_reps:
+                    # if FLAGS.use_cluster_dist:
+                    #     cluster_rep_i = [cluster_rep[i]]
+                    # else:
+                    #     cluster_rep_i = cluster_rep
                     # Keep all sentences with importance above threshold. All others will be kept with a probability of prob_to_keep
-                    if FLAGS.no_balancing or y[i] >= threshold or np.random.random() <= prob_to_keep:
-                        inst = np.concatenate([[sent_indices[i]], [sent_lens[i]], sent_reps[i], cluster_rep_i, [y[i]]])
-                        instances.append(inst)
+                    if FLAGS.no_balancing or rep.y >= threshold or np.random.random() <= prob_to_keep:
+                        # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
+                        #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
+                        instances.append(rep)
+                # for inst in x_y
                 # self.write_for_rouge
                 # print 'Example %d features processed' % counter
                         counter += 1 # this is how many examples we've decoded
+            doc_counter += len(batch_enc_states)
             pbar.update(len(batch_enc_states))
 
 

@@ -168,6 +168,35 @@ def article2ids(article_words, vocab):
             ids.append(i)
     return ids, oovs
 
+def tokenizedarticle2ids(tokenized_sents, vocab):
+    """Map the article words to their ids. Also return a list of OOVs in the article.
+
+    Args:
+        tokenized_sents: list of list of words (strings)
+        vocab: Vocabulary object
+
+    Returns:
+        ids:
+            A list of list of word ids (integers); OOVs are represented by their temporary article OOV number. If the vocabulary size is 50k and the article has 3 OOVs, then these temporary OOV numbers will be 50000, 50001, 50002.
+        oovs:
+            A list of the OOV words in the article (strings), in the order corresponding to their temporary article OOV numbers."""
+    all_ids = []
+    oovs = []
+    unk_id = vocab.word2id(UNKNOWN_TOKEN)
+    for sent in tokenized_sents:
+        ids = []
+        for w in sent:
+            i = vocab.word2id(w)
+            if i == unk_id: # If w is OOV
+                if w not in oovs: # Add to list of OOVs
+                    oovs.append(w)
+                oov_num = oovs.index(w) # This is 0 for the first article OOV, 1 for the second article OOV...
+                ids.append(vocab.size() + oov_num) # This is e.g. 50000 for the first article OOV, 50001 for the second...
+            else:
+                ids.append(i)
+        all_ids.append(ids)
+    return all_ids, oovs
+
 
 def abstract2ids(abstract_words, vocab, article_oovs):
     """Map the abstract words to their ids. In-article OOVs are mapped to their temporary OOV numbers.

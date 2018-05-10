@@ -22,6 +22,9 @@ import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 FLAGS = tf.app.flags.FLAGS
+import itertools
+from matplotlib import pyplot as plt
+import data
 
 def get_config():
     """Returns config for tf.session"""
@@ -48,6 +51,44 @@ def load_ckpt(saver, sess, ckpt_dir="train"):
 
 class InfinityValueError(ValueError): pass
 
+
+
+def flatten_list_of_lists(list_of_lists):
+    return list(itertools.chain.from_iterable(list_of_lists))
+
+def chunk_tokens(tokens, chunk_size):
+    chunk_size = max(1, chunk_size)
+    return (tokens[i:i+chunk_size] for i in xrange(0, len(tokens), chunk_size))
+
+def chunks(chunkable, n):
+    """ Yield successive n-sized chunks from l.
+    """
+    chunk_list = []
+    for i in xrange(0, len(chunkable), n):
+        chunk_list.append( chunkable[i:i+n])
+    return chunk_list
+
+def plot_bar_graph(values):
+    plt.figure()
+    plt.bar(np.arange(len(values)), values)
+
+def is_list_type(obj):
+    return isinstance(obj, (list, tuple, np.ndarray))
+
+def remove_period_ids(lst, vocab):
+    if len(lst) == 0:
+        return lst
+    if is_list_type(lst[0]):
+        return [[item for item in inner_list if item != vocab.word2id(data.PERIOD)] for inner_list in lst]
+    else:
+        return [item for item in lst if item != vocab.word2id(data.PERIOD)]
+
+def to_unicode(text):
+    try:
+        text = unicode(text, errors='replace')
+    except TypeError:
+        return text
+    return text
 
 def my_lcs(string, sub):
     """
@@ -77,7 +118,7 @@ def get_nGram(l, n=2):
     l = list(l)
     return list(set(zip(*[l[i:] for i in range(n)])))
 
-def calc_ROUGE_L_score(candidate, reference):
+def calc_ROUGE_L_score(candidate, reference, metric='f1'):
     """
     Compute ROUGE-L score given one candidate and references for an image
     :param candidate: str : candidate sentence to be evaluated
@@ -89,6 +130,9 @@ def calc_ROUGE_L_score(candidate, reference):
     beta = 1.2
     prec = []
     rec = []
+
+    if len(reference) == 0:
+        return 0.
 
     if type(reference[0]) is not list:
         reference = [reference]
@@ -103,10 +147,17 @@ def calc_ROUGE_L_score(candidate, reference):
     prec_max = max(prec)
     rec_max = max(rec)
 
-    if (prec_max != 0 and rec_max != 0):
-        score = ((1 + beta ** 2) * prec_max * rec_max) / float(rec_max + beta ** 2 * prec_max)
+    if metric == 'f1':
+        if (prec_max != 0 and rec_max != 0):
+            score = ((1 + beta ** 2) * prec_max * rec_max) / float(rec_max + beta ** 2 * prec_max)
+        else:
+            score = 0.0
+    elif metric == 'precision':
+        score = prec_max
+    elif metric == 'recall':
+        score = rec_max
     else:
-        score = 0.0
+        raise Exception('Invalid metric argument: %s. Must be one of {f1,precision,recall}.' % metric)
     return score
 
 class Similarity_Functions:
@@ -116,7 +167,7 @@ class Similarity_Functions:
     '''
     @classmethod
     def get_similarity(cls, enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings, summ_words_embs_list,
-                       summ_tokens, similarity_fn):
+                       summ_tokens, similarity_fn, vocab):
         if similarity_fn == 'cosine_similarity':
             similarity_matrix = cosine_similarity(enc_sent_embs, summ_embeddings)
             # Calculate amount of uncovered information for each sentence in the source
@@ -128,18 +179,29 @@ class Similarity_Functions:
         elif similarity_fn == 'ngram_similarity':
             importances_hat = cls.ngram_similarity(enc_tokens, summ_tokens)
         elif similarity_fn == 'rouge_l':
-            similarity_matrix = cls.rouge_l_similarity(enc_tokens, summ_tokens)
-            importances_hat = np.sum(similarity_matrix, 1)
+            metric = 'precision' if FLAGS.rouge_l_prec_rec else 'f1'
+            # similarity_matrix = cls.rouge_l_similarity(enc_tokens, summ_tokens, metric=metric)
+            # importances_hat = np.sum(similarity_matrix, 1)
+
+            # importances_hat = cls.rouge_l_similarity(enc_tokens, summ_tokens, metric=metric)
+            summ_tokens_combined = flatten_list_of_lists(summ_tokens)
+            importances_hat = cls.rouge_l_similarity(enc_tokens, summ_tokens_combined, vocab, metric=metric)
         return importances_hat
 
     @classmethod
-    def rouge_l_similarity(cls, article_sents, abstract_sents):
-        sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
+    def rouge_l_similarity(cls, article_sents, abstract_sents, vocab, metric='f1'):
+        # sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
+        sentence_similarity = np.zeros([len(article_sents)], dtype=float)
+        abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
         for article_sent_idx, article_sent in enumerate(article_sents):
-            for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
-                rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent)
-                sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
-        return sentence_similarity_matrix
+            rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
+            sentence_similarity[article_sent_idx] = rouge_l
+        return sentence_similarity
+        #     for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
+        #         rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
+        #         sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
+        # return sentence_similarity_matrix
+
 
     @classmethod
     def ngram_similarity(cls, article_sents, abstract_sents):

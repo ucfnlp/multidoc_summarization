@@ -16,13 +16,19 @@
 
 """This is the top-level file to train, evaluate or test your summarization model"""
 
+import os
+import matplotlib
+if not "DISPLAY" in os.environ:
+    matplotlib.use("Agg")
 import sys
 import time
 import gpu_util
-import os
 best_gpu = str(gpu_util.pick_gpu_lowest_memory())
 if best_gpu != 'None':
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_util.pick_gpu_lowest_memory())
+    calc_features_batch_size = 100
+else:
+    calc_features_batch_size = 10
 import tensorflow as tf
 import numpy as np
 from collections import namedtuple
@@ -34,6 +40,13 @@ import util
 from tensorflow.python import debug as tf_debug
 from tqdm import tqdm
 from tqdm import trange
+import write_data
+import importance_features
+import run_importance
+import cPickle
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.stem.porter import PorterStemmer
+import dill
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -58,6 +71,7 @@ tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode/calc_fe
 tf.app.flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
 
 # Where to save output
+tf.app.flags.DEFINE_string('actual_log_root', '', 'Root directory for all logging.')
 tf.app.flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
 tf.app.flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
@@ -109,17 +123,25 @@ tf.app.flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of
 tf.app.flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
                             sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
                             , ngram_similarity, cosine_similarity')
-tf.app.flags.DEFINE_boolean('always_squash', True, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
-tf.app.flags.DEFINE_boolean('oracle', False, 'Only used if using logan_reservoir. If true, then calculate importance as the ROUGE-L between source sentences and ground truth sentences.')
+tf.app.flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
 tf.app.flags.DEFINE_boolean('retain_beta_values', False, 'Only used if using mute mode. If true, then the beta being\
                                                          multiplied by alpha will not be a 0/1 mask, but instead keeps their values.')
-tf.app.flags.DEFINE_string('save_path', '', 'Path expression to save importances features.')
-tf.app.flags.DEFINE_boolean('no_balancing', False, 'Only if in calc_features mode. If False, then perform balancing based \
+tf.app.flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/importance_data', 'Path expression to save importances features.')
+tf.app.flags.DEFINE_boolean('no_balancing', True, 'Only if in calc_features mode. If False, then perform balancing based \
                                                    on how many sentences have R-L greater than 0.5.')
-tf.app.flags.DEFINE_string('importance_model_path', '/home/logan/data/multidoc_summarization/logs/importance_svr_100000/model.pickle', 'Path expression to importance prediction model.')
-tf.app.flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank}.')
+tf.app.flags.DEFINE_string('importance_model_name', 'importance_svr_regular', 'Name of importance prediction model, which is used to find the model file.')
+tf.app.flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank, tfidf, oracle}.')
 tf.app.flags.DEFINE_boolean('use_cluster_dist', False, 'Only if in calc_features mode. If True, then use the cluster distance as the cluster representation')
-tf.app.flags.DEFINE_boolean('multiple_articles', True, 'If True, then expect examples that have multiple documents.')
+tf.app.flags.DEFINE_string('sent_vec_feature_method', 'separate', 'Which method to use for calculating the sentence vector feature. Must be one of {fw_bw, average, separate}')
+tf.app.flags.DEFINE_boolean('normalize_features', False, 'If True, then normalize the simple features (sent_len, sent_position) to be between [0,1].')
+tf.app.flags.DEFINE_boolean('lexrank_as_feature', False, 'If True, then include lexrank as a feature when predicting importance using SVR.')
+tf.app.flags.DEFINE_boolean('subtract_from_original_importance', True, 'If True, then dont keep a running importance value. Instead, substract similarity from the original importance for each sentence.')
+tf.app.flags.DEFINE_boolean('rouge_l_prec_rec', True, 'If True, then dont use F-score. Instead, use precision for calculating similarity, and recall for calculating groundtruth importance.')
+tf.app.flags.DEFINE_boolean('train_on_val', True, 'If True, then train SVR on validation set.')
+tf.app.flags.DEFINE_string('dataset_name', 'tac_2011', 'Which dataset to use. Makes a log dir based on name. Must be one of {tac_2011, tac_2008, duc_2004, cnn_dm}')
+tf.app.flags.DEFINE_string('dataset_split', 'test', 'Which dataset split to use. Must be one of {train, val, test}')
+tf.app.flags.DEFINE_string('data_root', '/home/logan/data/multidoc_summarization/tf_examples', 'Path to root directory for all datasets.')
+tf.app.flags.DEFINE_float('lambda_val', 0.5, 'Lambda factor to reduce similarity amount to subtract from importance. Set to 0.5 to make importance and similarity have equal weight.')
 
 
 # If use a pretrained model
@@ -334,6 +356,14 @@ def run_eval(model, batcher, vocab):
         if train_step % 100 == 0:
             summary_writer.flush()
 
+def calc_features(cnn_dm_train_data_path, hps, vocab, batcher):
+    if not os.path.exists(FLAGS.save_path): os.makedirs(FLAGS.save_path)
+    decode_model_hps = hps  # This will be the hyperparameters for the decoder model
+    model = SummarizationModel(decode_model_hps, vocab)
+    decoder = BeamSearchDecoder(model, batcher, vocab)
+    decoder.calc_importance_features(cnn_dm_train_data_path, hps)
+
+
 
 def main(unused_argv):
     start_time = time.time()
@@ -344,12 +374,17 @@ def main(unused_argv):
     if FLAGS.logan_reservoir:
         FLAGS.logan_importance = True
         FLAGS.logan_beta = True
+    if FLAGS.dataset_name != "":
+        FLAGS.data_path = os.path.join(FLAGS.data_root, FLAGS.dataset_name, FLAGS.dataset_split + '*')
+    if not os.path.exists(os.path.join(FLAGS.data_root, FLAGS.dataset_name)):
+        print('No TF example data found at %s so creating it from raw data.' % os.path.join(FLAGS.data_root, FLAGS.dataset_name))
+        write_data.process_dataset(FLAGS.dataset_name)
 
     tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
     tf.logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
 
     # Change log_root to FLAGS.log_root/FLAGS.exp_name and create the dir if necessary
-    FLAGS.log_root = os.path.join(FLAGS.log_root, FLAGS.exp_name)
+    FLAGS.log_root = os.path.join(FLAGS.actual_log_root, FLAGS.exp_name)
     if not os.path.exists(FLAGS.log_root):
         if FLAGS.mode=="train":
             os.makedirs(FLAGS.log_root)
@@ -378,6 +413,58 @@ def main(unused_argv):
         if key in hparam_list: # if it's in the list
             hps_dict[key] = val # add it to the dict
     hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
+
+    if FLAGS.importance_fn == 'tfidf':
+        tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
+        if not os.path.exists(tfidf_model_path):
+            print('No TFIDF vectorizer model file found at %s, so fitting the model now.' % tfidf_model_path)
+
+            if not os.path.exists(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer')):
+                os.makedirs(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer'))
+
+            decode_model_hps = hps	# This will be the hyperparameters for the decoder model
+            decode_model_hps = hps._replace(max_dec_steps=1, batch_size=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+
+            batcher = Batcher(FLAGS.data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass)
+            all_sentences = []
+            while True:
+                batch = batcher.next_batch()	# 1 example repeated across batch
+                if batch is None: # finished decoding dataset in single_pass mode
+                    break
+                all_sentences.extend(batch.raw_article_sents[0])
+
+            stemmer = PorterStemmer()
+
+            class StemmedTfidfVectorizer(TfidfVectorizer):
+                def build_analyzer(self):
+                    analyzer = super(TfidfVectorizer, self).build_analyzer()
+                    return lambda doc: (stemmer.stem(w) for w in analyzer(doc))
+
+            tfidf_vectorizer = StemmedTfidfVectorizer(analyzer='word', stop_words='english', ngram_range=(1, 3), max_df=0.7)
+            sent_term_matrix = tfidf_vectorizer.fit_transform(all_sentences)
+            with open(tfidf_model_path, 'wb') as f:
+                dill.dump(tfidf_vectorizer, f)
+
+
+    if FLAGS.importance_fn == 'svr':
+        dataset_split = 'val' if FLAGS.train_on_val else 'train'
+        if not os.path.exists(FLAGS.save_path) or len(os.listdir(FLAGS.save_path)) == 0:
+            print('No importance_feature instances found at %s so creating it from raw data.' % FLAGS.save_path)
+            decode_model_hps = hps._replace(
+                max_dec_steps=1, batch_size=calc_features_batch_size)  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+            cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_dm', dataset_split + '*')
+            batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass)
+            calc_features(cnn_dm_train_data_path, decode_model_hps, vocab, batcher)
+        importance_model_path = os.path.join(FLAGS.actual_log_root, FLAGS.importance_model_name + '.pickle')
+        if not os.path.exists(importance_model_path):
+            print('No importance_feature SVR model found at %s so training it now.' % importance_model_path)
+            features_list = importance_features.get_features_list(True)
+            sent_reps = run_importance.load_data(os.path.join(FLAGS.save_path, dataset_split + '*'), -1)
+            x_y = importance_features.features_to_array(sent_reps, features_list)
+            train_x, train_y = x_y[:,:-1], x_y[:,-1]
+            svr_model = run_importance.run_training(train_x, train_y)
+            with open(importance_model_path, 'wb') as f:
+                cPickle.dump(svr_model, f)
 
     # Create a batcher object that will create minibatches of data
     batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
@@ -430,13 +517,9 @@ def main(unused_argv):
 
         decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
     elif hps.mode == 'calc_features':
-        if not os.path.exists(FLAGS.save_path): os.makedirs(FLAGS.save_path)
-        decode_model_hps = hps  # This will be the hyperparameters for the decoder model
         decode_model_hps = hps._replace(
-            max_dec_steps=1)  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
-        model = SummarizationModel(decode_model_hps, vocab)
-        decoder = BeamSearchDecoder(model, batcher, vocab)
-        decoder.calc_importance_features()
+            max_dec_steps=1, batch_size=calc_features_batch_size)
+        calc_features(FLAGS.save_path, decode_model_hps, vocab, batcher)
 
     else:
         raise ValueError("The 'mode' flag must be one of train/eval/decode")

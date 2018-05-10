@@ -14,29 +14,63 @@ hupexit() {
 trap hupexit HUP
 trap intexit INT
 
-exp_name="tac_2011"
+# DATASET_NAME=${1:-}
+# K_VALUES=${2:-"2 3 5 7 10"}
+# LAMBDAS=${3:-"0.25 0.5 0.75 1"}
+# OPTIONAL_EXP_NAME=${4:-}
+# shift 4
+# echo "$OPTIONAL_EXP_NAME"
+# echo "$@"
 
-K_VALUES=${1:-"3 4 5 6 8 10 13 15"}
-SIMILARITY_FN=${2:-"rouge_l"}
-OPTIONAL_EXP_NAME=${3:-}
-shift 3
+DATASET_NAME=tac_2011
+K_VALUES="2 5 10 25 50"
+LAMBDAS="0.9 0.7 0.5 0.3"
+OPTIONAL_EXP_NAME=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --DATASET_NAME=*)
+      DATASET_NAME="${1#*=}"
+      ;;
+    --K_VALUES=*)
+      K_VALUES="${1#*=}"
+      ;;
+    --LAMBDAS=*)
+      LAMBDAS="${1#*=}"
+      ;;
+    --OPTIONAL_EXP_NAME=*)
+      OPTIONAL_EXP_NAME="${1#*=}"
+      ;;
+    *)
+        break
+  esac
+  shift
+done
+
 echo "$OPTIONAL_EXP_NAME"
 echo "$@"
 
-
-for k in $K_VALUES; do
-	sh test_one_no_options.sh _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME" --logan_importance --logan_beta --logan_reservoir --similarity_fn="$SIMILARITY_FN" --mute_k="$k" "$@" & pids+=($!)
+for lambda in $LAMBDAS; do
+    for k in $K_VALUES; do
+	    sh test_one_no_options.sh "$DATASET_NAME" _reservoir_lambda_"$lambda"_mute_"$k""$OPTIONAL_EXP_NAME" --logan_importance --logan_beta --logan_reservoir --mute_k="$k" "$@" --lambda_val="$lambda" & pids+=($!)
+        sleep 5
+    done
 done
 
 for pid in "${pids[@]}"; do
    wait "$pid"
 done
 
-for k in $K_VALUES; do
-	echo $k
+for lambda in $LAMBDAS; do
+    for k in $K_VALUES; do
+	    echo "$lambda"_"$k"
+    done
 done
-for k in $K_VALUES; do
-	sh get_results_one.sh "$exp_name" _reservoir_mute_"$k"_"$SIMILARITY_FN""$OPTIONAL_EXP_NAME";
+echo "$OPTIONAL_EXP_NAME"
+for lambda in $LAMBDAS; do
+    for k in $K_VALUES; do
+	    sh get_results_one.sh "$DATASET_NAME" _reservoir_lambda_"$lambda"_mute_"$k""$OPTIONAL_EXP_NAME";
+    done
 done
 
 wait
