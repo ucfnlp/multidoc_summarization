@@ -20,6 +20,7 @@ K_VALUES="2 5 10 25 50"
 LAMBDAS="0.9 0.7 0.5 0.3"
 OPTIONAL_EXP_NAME=""
 FEATURE="all"
+RUN_ONCE="0"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,11 +39,19 @@ while [ $# -gt 0 ]; do
     --FEATURE=*)
       FEATURE="${1#*=}"
       ;;
+    --RUN_ONCE=*)
+      RUN_ONCE="${1#*=}"
+      ;;
     *)
         break
   esac
   shift
 done
+
+if [[ "$RUN_ONCE" = "1" ]]; then
+    K_VALUES="10"
+    LAMBDAS="0.5"
+fi
 
 
 # shift 4

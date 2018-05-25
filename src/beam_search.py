@@ -43,8 +43,11 @@ import importance_features
 from sklearn.feature_extraction.text import TfidfVectorizer
 from nltk.stem.porter import PorterStemmer
 import dill
+import time
+import random
+from absl import flags
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 
 class Hypothesis(object):
@@ -302,7 +305,7 @@ def softmax_trick(distribution, tau):
     return softmax(distribution / tau)
 
 
-def save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_embs, enc_words_embs_list,
+def save_importances_and_coverages(logan_importances, importances_hat, enc_sentences, enc_sent_embs, enc_words_embs_list,
                                    enc_tokens, hyp, sess, batch, vocab, tokenizer, ex_index):
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
     summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
@@ -324,12 +327,8 @@ def save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_em
         else:
             similarity_amount = get_similarity_for_one_summ_sent(enc_sentences, enc_sent_embs, enc_words_embs_list, enc_tokens,
                                         cur_summ_embeddings, cur_summ_words_embs_list, cur_summ_tokens, vocab)
-        if FLAGS.logan_coverage:
-            if FLAGS.logan_importance:                  # if both sentence-level options are on
-                beta_for_sentences = combine_coverage_and_importance(uncovered_amount, logan_importances)
-            else:
-                beta_for_sentences = uncovered_amount  # if only sentence-level coverage is on
-        elif FLAGS.logan_reservoir:
+
+        if FLAGS.logan_reservoir:
             beta_for_sentences = calc_beta_from_sim_and_imp(similarity_amount, logan_importances, prev_beta, batch, enc_tokens)
         elif FLAGS.logan_importance:
             beta_for_sentences = logan_importances  # if only sentence-level importance is on
@@ -343,7 +342,7 @@ def save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_em
         file_path = os.path.join(distr_dir, save_name)
         np.savez(file_path, beta=beta_for_sentences, importances=logan_importances,
                  coverages=uncovered_amount, enc_sentences=enc_sentences, summ_str=summ_str)
-        distributions = [('coverage', uncovered_amount),
+        distributions = [('importance_hat', importances_hat),
                          ('similarity', similarity_amount),
                          ('importance', logan_importances),
                          ('beta', beta_for_sentences)]
@@ -460,7 +459,10 @@ def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model, 
     # # x = np.concatenate([np.expand_dims(abs_sent_indices, 1), np.expand_dims(rel_sent_indices, 1),
     # #                     np.expand_dims(sent_lens, 1), np.expand_dims(lexrank_score, 1), sent_reps,
     # #                     cluster_representations], 1)
-    importances = svr_model.predict(x)
+    if FLAGS.importance_fn == 'svr':
+        importances = svr_model.predict(x)
+    else:
+        importances = svr_model.decision_function(x)
     return importances
 
 def save_sorted_sentences(logan_importances, raw_article_sents, ex_index):
@@ -478,12 +480,24 @@ def save_sorted_sentences(logan_importances, raw_article_sents, ex_index):
 def get_tfidf_importances(raw_article_sents):
     tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
 
-    with open(tfidf_model_path, 'rb') as f:
-        tfidf_vectorizer = dill.load(f)
+    while True:
+        try:
+            with open(tfidf_model_path, 'rb') as f:
+                tfidf_vectorizer = dill.load(f)
+            break
+        except (EOFError, KeyError):
+            time.sleep(random.randint(3,6))
+            continue
     sent_reps = tfidf_vectorizer.transform(raw_article_sents)
     cluster_rep = np.mean(sent_reps, axis=0)
     similarity_matrix = cosine_similarity(sent_reps, cluster_rep)
     return np.squeeze(similarity_matrix)
+
+def get_query_importances(enc_sentences, query):
+    importances_hat = np.zeros([len(enc_sentences)], dtype=float)
+    for sent_idx, sent in enumerate(enc_sentences):
+        importances_hat[sent_idx] = sent.count(query)
+    return importances_hat
 
 
 
@@ -515,24 +529,27 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_s
     # enc_states has shape [batch_size, <=max_enc_steps, 2*hidden_dim].
 
 
-
-    if FLAGS.importance_fn == 'svr':
-        with open(os.path.join(FLAGS.log_root, '..', FLAGS.importance_model_name + '.pickle'), 'rb') as f:
-            svr_model = cPickle.load(f)
-    tokenizer = Tokenizer('english')
-
-    # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
-    #                 batch.enc_batch_extend_vocab[0], tokenizer, batch.art_oovs[0], vocab, batch.doc_indices[0],
-    #                 False, chunk_size=FLAGS.chunk_size, cutoff_len=FLAGS.max_enc_steps)
-    enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
-    enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
-    enc_sent_embs, enc_words_embs_list, enc_words_list = get_sentences_embeddings(enc_sentences, enc_tokens,
-                                                                                            sess, batch, vocab)
-    sent_representations_separate = importance_features.get_separate_enc_states(model, sess, enc_sentences, vocab, hps)
-    enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
-
-
     if FLAGS.logan_importance:
+
+        if FLAGS.importance_fn == 'svr':
+            with open(os.path.join(FLAGS.actual_log_root, FLAGS.importance_model_name + '_' + str(FLAGS.svr_num_documents) + '.pickle'), 'rb') as f:
+                svr_model = cPickle.load(f)
+        elif FLAGS.importance_fn == 'svm':
+            with open(os.path.join(FLAGS.actual_log_root, FLAGS.svm_model_name + '.pickle'), 'rb') as f:
+                svr_model = cPickle.load(f)
+        tokenizer = Tokenizer('english')
+
+        # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
+        #                 batch.enc_batch_extend_vocab[0], tokenizer, batch.art_oovs[0], vocab, batch.doc_indices[0],
+        #                 False, chunk_size=FLAGS.chunk_size, cutoff_len=FLAGS.max_enc_steps)
+        enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
+        enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
+        enc_sent_embs, enc_words_embs_list, enc_words_list = get_sentences_embeddings(enc_sentences, enc_tokens,
+                                                                                                sess, batch, vocab)
+        sent_representations_separate = importance_features.get_separate_enc_states(model, sess, enc_sentences, vocab, hps)
+        enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
+
+
         if FLAGS.importance_fn == 'oracle':
             human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
             # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
@@ -544,10 +561,13 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_s
         elif FLAGS.importance_fn == 'lex_rank':
             summarizer = LexRankSummarizer()
             importances_hat = summarizer.get_importances(enc_sentences, tokenizer)
-        elif FLAGS.importance_fn == 'svr':
+        elif FLAGS.importance_fn == 'svr' or FLAGS.importance_fn == 'svm':
             importances_hat = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model, tokenizer, sent_representations_separate)
         elif FLAGS.importance_fn == 'tfidf':
             importances_hat = get_tfidf_importances(batch.raw_article_sents[0])
+        elif FLAGS.importance_fn == 'query':
+            query_word = FLAGS.query
+            importances_hat = get_query_importances(enc_sentences, query_word)
         logan_importances = special_squash(importances_hat)
         # plot_importances(enc_sentences_str, logan_importances, 'n/a')
         if FLAGS.logan_importance_tau != 1.0:
@@ -691,8 +711,6 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_s
                     hyp.beta = calc_beta_from_cov_and_imp(logan_coverage[hyp_idx], logan_importances, batch, enc_tokens)
                 # with open('log_optimization' + str(FLAGS.coverage_optimization), 'a') as f:
                 #     np.savetxt(f, hyp.beta)
-        if steps==13:
-            a=0
         steps += 1
 
     # At this point, either we've got beam_size results, or we've reached maximum decoder steps
@@ -705,9 +723,9 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_s
     hyps_sorted = sort_hyps(results)
     best_hyp = hyps_sorted[0]
 
-    if (ex_index in [0,1]) or (FLAGS.save_distributions and
+    if (FLAGS.logan_importance and ex_index in [0,1]) or (FLAGS.save_distributions and
                            ((FLAGS.logan_importance and FLAGS.logan_coverage) or FLAGS.logan_reservoir)):
-        save_importances_and_coverages(logan_importances, enc_sentences, enc_sent_embs, enc_words_embs_list,
+        save_importances_and_coverages(logan_importances, importances_hat, enc_sentences, enc_sent_embs, enc_words_embs_list,
                                    enc_tokens, best_hyp, sess, batch, vocab, tokenizer, ex_index)
     # if FLAGS.logan_importance and FLAGS.logan_reservoir:
     #     save_importances_and_similarities(logan_importances, enc_sentences, enc_sent_embs, enc_words_embs_list,
@@ -721,3 +739,5 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps, specific_max_dec_s
 def sort_hyps(hyps):
     """Return a list of Hypothesis objects, sorted by descending average log probability"""
     return sorted(hyps, key=lambda h: h.avg_log_prob, reverse=True)
+
+

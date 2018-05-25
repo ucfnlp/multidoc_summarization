@@ -1,10 +1,14 @@
 import os
 import numpy as np
 import pyrouge
-import logging
 import tensorflow as tf
+from absl import flags
+from absl import flags
+from absl import app
+from absl import logging
+import logging as log
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 class bcolors:
     HEADER = '\033[95m'
@@ -24,8 +28,8 @@ max_dec_steps = 120
 rouge_logan_dec_dir = '/home/logan/data/multidoc_summarization/logs/scratch/decode_test_100000maxenc_4beam_70mindec_100maxdec_ckpt-238410/decoded'
 rouge_orig_dec_dir = '/home/logan/data/multidoc_summarization/logs/tac_2011/decode_test_10000maxenc_4beam_35mindec_100maxdec_ckpt-238410/decoded'
 
-tf.app.flags.DEFINE_string('candidate_exp_name', rouge_logan_dec_dir, 'Path to system-generated summaries that we want to evaluate.')
-tf.app.flags.DEFINE_string('original_exp_name', rouge_orig_dec_dir, 'Path to system-generated summaries by a system we are comparing to.')
+flags.DEFINE_string('candidate_exp_name', rouge_logan_dec_dir, 'Path to system-generated summaries that we want to evaluate.')
+flags.DEFINE_string('original_exp_name', rouge_orig_dec_dir, 'Path to system-generated summaries by a system we are comparing to.')
 
 
 
@@ -39,7 +43,7 @@ def rouge_eval_individual(ref_dir, dec_dir, id):
     r.system_filename_pattern = '(\d+)' + id_str + '_decoded.txt'
     r.model_dir = ref_dir
     r.system_dir = dec_dir
-    logging.getLogger('global').setLevel(logging.WARNING) # silence pyrouge logging
+    log.getLogger('global').setLevel(log.WARNING) # silence pyrouge logging
     rouge_args = ['-e', '/home/logan/ROUGE/RELEASE-1.5.5/data',
          '-c',
          '95',
@@ -106,7 +110,7 @@ def main(unused_argv):
 
 
 if __name__ == '__main__':
-    tf.app.run()
+    app.run(main)
 
 
 

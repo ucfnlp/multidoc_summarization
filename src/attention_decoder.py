@@ -21,6 +21,9 @@ from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import math_ops
+from absl import flags
+
+FLAGS = flags.FLAGS
 
 # Note: this function is based on tf.contrib.legacy_seq2seq_attention_decoder, which is now outdated.
 # In the future, it would make more sense to write variants on the attention mechanism using the new seq2seq library for tensorflow 1.0: https://www.tensorflow.org/api_guides/python/contrib.seq2seq#Attention
@@ -103,7 +106,8 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
 
                 def apply_logan_beta(pre_attn_dist, logan_beta):
                     post_attn_dist = pre_attn_dist * logan_beta
-                    post_attn_dist = post_attn_dist / tf.expand_dims(tf.reduce_sum(post_attn_dist, axis=1), axis=1)
+                    if not FLAGS.dont_renormalize:
+                        post_attn_dist = post_attn_dist / tf.expand_dims(tf.reduce_sum(post_attn_dist, axis=1), axis=1)
                     return post_attn_dist
 
                 if use_coverage and coverage is not None: # non-first step of coverage

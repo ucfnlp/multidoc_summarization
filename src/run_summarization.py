@@ -25,7 +25,7 @@ import time
 import gpu_util
 best_gpu = str(gpu_util.pick_gpu_lowest_memory())
 if best_gpu != 'None':
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_util.pick_gpu_lowest_memory())
+    # os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_util.pick_gpu_lowest_memory())
     calc_features_batch_size = 100
 else:
     calc_features_batch_size = 10
@@ -47,109 +47,124 @@ import cPickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 from nltk.stem.porter import PorterStemmer
 import dill
+from absl import app
+from absl import flags
+from absl import logging
+import random
 
-FLAGS = tf.app.flags.FLAGS
+random.seed(222)
+FLAGS = flags.FLAGS
 
 # # Where to find data
-# tf.app.flags.DEFINE_string('data_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_*', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
-# tf.app.flags.DEFINE_string('vocab_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab', 'Path expression to text vocabulary file.')
+# flags.DEFINE_string('data_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_*', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
+# flags.DEFINE_string('vocab_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab', 'Path expression to text vocabulary file.')
 # 
 # # Important settings
-# tf.app.flags.DEFINE_string('mode', 'train', 'must be one of train/eval/decode')
-# tf.app.flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
+# flags.DEFINE_string('mode', 'train', 'must be one of train/eval/decode')
+# flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
 # 
 # # Where to save output
-# tf.app.flags.DEFINE_string('log_root', '/home/logan/data/multidoc_summarization/logs', 'Root directory for all logging.')
-# tf.app.flags.DEFINE_string('exp_name', 'myexperiment', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
+# flags.DEFINE_string('log_root', '/home/logan/data/multidoc_summarization/logs', 'Root directory for all logging.')
+# flags.DEFINE_string('exp_name', 'myexperiment', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
 # Where to find data
-tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
-tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
+flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
+flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
 
 # Important settings
-tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode/calc_features')
-tf.app.flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
+flags.DEFINE_string('mode', '', 'must be one of train/eval/decode/calc_features')
+flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
 
 # Where to save output
-tf.app.flags.DEFINE_string('actual_log_root', '', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
+flags.DEFINE_string('actual_log_root', '', 'Root directory for all logging.')
+flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
+flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
 # Hyperparameters
-tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
-tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
-tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
-tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
-tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
-tf.app.flags.DEFINE_integer('min_dec_steps', 35, 'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
-tf.app.flags.DEFINE_integer('vocab_size', 50000, 'Size of vocabulary. These will be read from the vocabulary file in order. If the vocabulary file contains fewer words than this number, or if this number is set to 0, will take all words in the vocabulary file.')
-tf.app.flags.DEFINE_float('lr', 0.15, 'learning rate')
-tf.app.flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value for Adagrad')
-tf.app.flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
-tf.app.flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
-tf.app.flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
+flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
+flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
+flags.DEFINE_integer('batch_size', 16, 'minibatch size')
+flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
+flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
+flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
+flags.DEFINE_integer('min_dec_steps', 35, 'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
+flags.DEFINE_integer('vocab_size', 50000, 'Size of vocabulary. These will be read from the vocabulary file in order. If the vocabulary file contains fewer words than this number, or if this number is set to 0, will take all words in the vocabulary file.')
+flags.DEFINE_float('lr', 0.15, 'learning rate')
+flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value for Adagrad')
+flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
+flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
+flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
 
 # Pointer-generator or baseline model
-tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
+flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
 
 # Coverage hyperparameters
-tf.app.flags.DEFINE_boolean('coverage', False, 'Use coverage mechanism. Note, the experiments reported in the ACL paper train WITHOUT coverage until converged, and then train for a short phase WITH coverage afterwards. i.e. to reproduce the results in the ACL paper, turn this off for most of training then turn on for a short phase at the end.')
-tf.app.flags.DEFINE_float('cov_loss_wt', 1.0, 'Weight of coverage loss (lambda in the paper). If zero, then no incentive to minimize coverage loss.')
+flags.DEFINE_boolean('coverage', False, 'Use coverage mechanism. Note, the experiments reported in the ACL paper train WITHOUT coverage until converged, and then train for a short phase WITH coverage afterwards. i.e. to reproduce the results in the ACL paper, turn this off for most of training then turn on for a short phase at the end.')
+flags.DEFINE_float('cov_loss_wt', 1.0, 'Weight of coverage loss (lambda in the paper). If zero, then no incentive to minimize coverage loss.')
 
 # Utility flags, for restoring and changing checkpoints
-tf.app.flags.DEFINE_boolean('convert_to_coverage_model', False, 'Convert a non-coverage model to a coverage model. Turn this on and run in train mode. Your current training model will be copied to a new version (same name with _cov_init appended) that will be ready to run with coverage flag turned on, for the coverage training stage.')
-tf.app.flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model in the eval/ dir and save it in the train/ dir, ready to be used for further training. Useful for early stopping, or if your training checkpoint has become corrupted with e.g. NaN values.')
+flags.DEFINE_boolean('convert_to_coverage_model', False, 'Convert a non-coverage model to a coverage model. Turn this on and run in train mode. Your current training model will be copied to a new version (same name with _cov_init appended) that will be ready to run with coverage flag turned on, for the coverage training stage.')
+flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model in the eval/ dir and save it in the train/ dir, ready to be used for further training. Useful for early stopping, or if your training checkpoint has become corrupted with e.g. NaN values.')
 
 # Debugging. See https://www.tensorflow.org/programmers_guide/debugger
-tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
+flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
 
 # Pointer-generator or sentence coverage model
-tf.app.flags.DEFINE_boolean('logan_coverage', False, 'If True, use logan\'s coverage to weight sentences.')
+flags.DEFINE_boolean('logan_coverage', False, 'If True, use logan\'s coverage to weight sentences.')
 
 # Pointer-generator or sentence importance model
-tf.app.flags.DEFINE_boolean('logan_importance', False, 'If True, use logan\'s importance to weight sentences.')
-tf.app.flags.DEFINE_boolean('logan_beta', False, 'Set to true if using logan_coverage or logan_importance.')
-tf.app.flags.DEFINE_float('logan_coverage_tau', 1.0, 'Tau factor to skew the coverage distribution. Set to 1.0 to turn off.')
-tf.app.flags.DEFINE_float('logan_importance_tau', 1.0, 'Tau factor to skew the importance distribution. Set to 1.0 to turn off.')
-tf.app.flags.DEFINE_float('logan_beta_tau', 1.0, 'Tau factor to skew the combined beta distribution. Set to 1.0 to turn off.')
-tf.app.flags.DEFINE_integer('chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
-tf.app.flags.DEFINE_integer('num_iterations', 60000, 'How many iterations to run. Set to -1 to run indefinitely.')
-tf.app.flags.DEFINE_boolean('coverage_optimization', True, 'If true, only recalculates coverage when necessary.')
-tf.app.flags.DEFINE_boolean('logan_reservoir', False, 'If true, use the paradigm of importance being a reservoir that keeps\
+flags.DEFINE_boolean('logan_importance', False, 'If True, use logan\'s importance to weight sentences.')
+flags.DEFINE_boolean('logan_beta', False, 'Set to true if using logan_coverage or logan_importance.')
+flags.DEFINE_float('logan_coverage_tau', 1.0, 'Tau factor to skew the coverage distribution. Set to 1.0 to turn off.')
+flags.DEFINE_float('logan_importance_tau', 1.0, 'Tau factor to skew the importance distribution. Set to 1.0 to turn off.')
+flags.DEFINE_float('logan_beta_tau', 1.0, 'Tau factor to skew the combined beta distribution. Set to 1.0 to turn off.')
+flags.DEFINE_integer('chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
+flags.DEFINE_integer('num_iterations', 60000, 'How many iterations to run. Set to -1 to run indefinitely.')
+flags.DEFINE_boolean('coverage_optimization', True, 'If true, only recalculates coverage when necessary.')
+flags.DEFINE_boolean('logan_reservoir', False, 'If true, use the paradigm of importance being a reservoir that keeps\
                             being reduced by the similarity to the summary sentences.')
-tf.app.flags.DEFINE_integer('mute_k', -1, 'Pick top k sentences to select and mute all others. Set to -1 to turn off.')
-tf.app.flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of each distribution.')
-tf.app.flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
+flags.DEFINE_integer('mute_k', -1, 'Pick top k sentences to select and mute all others. Set to -1 to turn off.')
+flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of each distribution.')
+flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
                             sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
                             , ngram_similarity, cosine_similarity')
-tf.app.flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
-tf.app.flags.DEFINE_boolean('retain_beta_values', False, 'Only used if using mute mode. If true, then the beta being\
+flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
+flags.DEFINE_boolean('retain_beta_values', False, 'Only used if using mute mode. If true, then the beta being\
                                                          multiplied by alpha will not be a 0/1 mask, but instead keeps their values.')
-tf.app.flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/importance_data', 'Path expression to save importances features.')
-tf.app.flags.DEFINE_boolean('no_balancing', True, 'Only if in calc_features mode. If False, then perform balancing based \
+flags.DEFINE_boolean('dont_renormalize', False, 'Dont renormalize the alpha values after multiplying by beta')
+flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/svr', 'Path expression to save importances features.')
+flags.DEFINE_integer('svr_num_documents', 10000, 'How many iterations to run. Set to -1 to run indefinitely.')
+flags.DEFINE_boolean('no_balancing', True, 'Only if in calc_features mode. If False, then perform balancing based \
                                                    on how many sentences have R-L greater than 0.5.')
-tf.app.flags.DEFINE_string('importance_model_name', 'importance_svr_regular', 'Name of importance prediction model, which is used to find the model file.')
-tf.app.flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank, tfidf, oracle}.')
-tf.app.flags.DEFINE_boolean('use_cluster_dist', False, 'Only if in calc_features mode. If True, then use the cluster distance as the cluster representation')
-tf.app.flags.DEFINE_string('sent_vec_feature_method', 'separate', 'Which method to use for calculating the sentence vector feature. Must be one of {fw_bw, average, separate}')
-tf.app.flags.DEFINE_boolean('normalize_features', False, 'If True, then normalize the simple features (sent_len, sent_position) to be between [0,1].')
-tf.app.flags.DEFINE_boolean('lexrank_as_feature', False, 'If True, then include lexrank as a feature when predicting importance using SVR.')
-tf.app.flags.DEFINE_boolean('subtract_from_original_importance', True, 'If True, then dont keep a running importance value. Instead, substract similarity from the original importance for each sentence.')
-tf.app.flags.DEFINE_boolean('rouge_l_prec_rec', True, 'If True, then dont use F-score. Instead, use precision for calculating similarity, and recall for calculating groundtruth importance.')
-tf.app.flags.DEFINE_boolean('train_on_val', True, 'If True, then train SVR on validation set.')
-tf.app.flags.DEFINE_string('dataset_name', 'tac_2011', 'Which dataset to use. Makes a log dir based on name. Must be one of {tac_2011, tac_2008, duc_2004, cnn_dm}')
-tf.app.flags.DEFINE_string('dataset_split', 'test', 'Which dataset split to use. Must be one of {train, val, test}')
-tf.app.flags.DEFINE_string('data_root', '/home/logan/data/multidoc_summarization/tf_examples', 'Path to root directory for all datasets.')
-tf.app.flags.DEFINE_float('lambda_val', 0.5, 'Lambda factor to reduce similarity amount to subtract from importance. Set to 0.5 to make importance and similarity have equal weight.')
+flags.DEFINE_string('importance_model_name', 'svr', 'Name of importance prediction model, which is used to find the model file.')
+flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank, tfidf, oracle}.')
+flags.DEFINE_boolean('use_cluster_dist', False, 'Only if in calc_features mode. If True, then use the cluster distance as the cluster representation')
+flags.DEFINE_string('sent_vec_feature_method', 'separate', 'Which method to use for calculating the sentence vector feature. Must be one of {fw_bw, average, separate}')
+flags.DEFINE_boolean('normalize_features', False, 'If True, then normalize the simple features (sent_len, sent_position) to be between [0,1].')
+flags.DEFINE_boolean('lexrank_as_feature', False, 'If True, then include lexrank as a feature when predicting importance using SVR.')
+flags.DEFINE_boolean('subtract_from_original_importance', True, 'If True, then dont keep a running importance value. Instead, substract similarity from the original importance for each sentence.')
+flags.DEFINE_boolean('rouge_l_prec_rec', True, 'If True, then dont use F-score. Instead, use precision for calculating similarity, and recall for calculating groundtruth importance.')
+flags.DEFINE_boolean('train_on_val', True, 'If True, then train SVR on validation set.')
+flags.DEFINE_boolean('both_cnn_dm', False, 'If True, then train SVR on both CNN and DailyMail, rather than just CNN.')
+flags.DEFINE_string('dataset_name', 'tac_2011', 'Which dataset to use. Makes a log dir based on name.\
+                                                Must be one of {tac_2011, tac_2008, duc_2004, duc_tac, cnn_dm}')
+flags.DEFINE_string('dataset_split', 'test', 'Which dataset split to use. Must be one of {train, val, test}')
+flags.DEFINE_string('data_root', '/home/logan/data/multidoc_summarization/tf_examples', 'Path to root directory for all datasets.')
+flags.DEFINE_float('lambda_val', 0.5, 'Lambda factor to reduce similarity amount to subtract from importance. Set to 0.5 to make importance and similarity have equal weight.')
+flags.DEFINE_string('svm_model_name', 'svm_10000', 'Name of importance prediction model, which is used to find the model file.')
+flags.DEFINE_string('svm_save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/svm_data_10000', 'Path expression to save importances features.')
+flags.DEFINE_boolean('svm_no_balancing', False, 'Only if in calc_features mode. If False, then perform balancing based \
+                                                   on how many sentences have R-L greater than 0.5.')
+flags.DEFINE_boolean('randomize_sent_order', False, 'If True, then randomize the sentence order when loading the TF examples.')
+flags.DEFINE_string('query', 'family', 'If True, then randomize the sentence order when loading the TF examples.')
 
 
 # If use a pretrained model
-tf.app.flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')
-tf.app.flags.DEFINE_string('pretrained_path', '/home/logan/data/multidoc_summarization/logs/pretrained_model/train', 'Root directory for all logging.')
+flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')
+flags.DEFINE_string('pretrained_path', '/home/logan/data/multidoc_summarization/logs/pretrained_model/train', 'Root directory for all logging.')
 
 # Pointer-generator or baseline model
-tf.app.flags.DEFINE_boolean('upitt', False, 'Set to true if working on UPitt data.')
+flags.DEFINE_boolean('upitt', False, 'Set to true if working on UPitt data.')
 
 
 
@@ -176,13 +191,13 @@ def calc_running_avg_loss(loss, running_avg_loss, summary_writer, step, decay=0.
     tag_name = 'running_avg_loss/decay=%f' % (decay)
     loss_sum.value.add(tag=tag_name, simple_value=running_avg_loss)
     summary_writer.add_summary(loss_sum, step)
-    tf.logging.info('running_avg_loss: %f', running_avg_loss)
+    logging.info('running_avg_loss: %f', running_avg_loss)
     return running_avg_loss
 
 
 def restore_best_model():
     """Load bestmodel file from eval directory, add variables for adagrad, and save to train directory"""
-    tf.logging.info("Restoring bestmodel for training...")
+    logging.info("Restoring bestmodel for training...")
 
     # Initialize all vars in the model
     sess = tf.Session(config=util.get_config())
@@ -210,7 +225,7 @@ def restore_best_model():
 
 def convert_to_coverage_model():
     """Load non-coverage checkpoint, add initialized extra variables for coverage, and save as new checkpoint"""
-    tf.logging.info("converting non-coverage model to coverage model..")
+    logging.info("converting non-coverage model to coverage model..")
 
     # initialize an entire coverage model from scratch
     sess = tf.Session(config=util.get_config())
@@ -253,19 +268,19 @@ def setup_training(model, batcher):
                                          save_model_secs=60, # checkpoint every 60 secs
                                          global_step=model.global_step)
     summary_writer = sv.summary_writer
-    tf.logging.info("Preparing or waiting for session...")
+    logging.info("Preparing or waiting for session...")
     sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
-    tf.logging.info("Created session.")
+    logging.info("Created session.")
     try:
         run_training(model, batcher, sess_context_manager, sv, summary_writer) # this is an infinite loop until interrupted
     except KeyboardInterrupt:
-        tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
+        logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
         sv.stop()
 
 
 def run_training(model, batcher, sess_context_manager, sv, summary_writer):
     """Repeatedly runs training iterations, logging loss to screen and writing summaries"""
-    tf.logging.info("starting run_training")
+    logging.info("starting run_training")
     with sess_context_manager as sess:
         if FLAGS.debug: # start the tensorflow debugger
             sess = tf_debug.LocalCLIDebugWrapperSession(sess)
@@ -328,14 +343,14 @@ def run_eval(model, batcher, vocab):
         t0=time.time()
         results = model.run_eval_step(sess, batch)
         t1=time.time()
-        tf.logging.info('seconds for batch: %.2f', t1-t0)
+        logging.info('seconds for batch: %.2f', t1-t0)
 
         # print the loss and coverage loss to screen
         loss = results['loss']
-        tf.logging.info('loss: %f', loss)
+        logging.info('loss: %f', loss)
         if FLAGS.coverage:
             coverage_loss = results['coverage_loss']
-            tf.logging.info("coverage_loss: %f", coverage_loss)
+            logging.info("coverage_loss: %f", coverage_loss)
 
         # add summaries
         summaries = results['summaries']
@@ -348,7 +363,7 @@ def run_eval(model, batcher, vocab):
         # If running_avg_loss is best so far, save this checkpoint (early stopping).
         # These checkpoints will appear as bestmodel-<iteration_number> in the eval dir
         if best_loss is None or running_avg_loss < best_loss:
-            tf.logging.info('Found new best model with %.3f running_avg_loss. Saving to %s', running_avg_loss, bestmodel_save_path)
+            logging.info('Found new best model with %.3f running_avg_loss. Saving to %s', running_avg_loss, bestmodel_save_path)
             saver.save(sess, bestmodel_save_path, global_step=train_step, latest_filename='checkpoint_best')
             best_loss = running_avg_loss
 
@@ -356,12 +371,12 @@ def run_eval(model, batcher, vocab):
         if train_step % 100 == 0:
             summary_writer.flush()
 
-def calc_features(cnn_dm_train_data_path, hps, vocab, batcher):
-    if not os.path.exists(FLAGS.save_path): os.makedirs(FLAGS.save_path)
+def calc_features(cnn_dm_train_data_path, hps, vocab, batcher, save_path):
+    if not os.path.exists(save_path): os.makedirs(save_path)
     decode_model_hps = hps  # This will be the hyperparameters for the decoder model
     model = SummarizationModel(decode_model_hps, vocab)
     decoder = BeamSearchDecoder(model, batcher, vocab)
-    decoder.calc_importance_features(cnn_dm_train_data_path, hps)
+    decoder.calc_importance_features(cnn_dm_train_data_path, hps, save_path, FLAGS.svr_num_documents)
 
 
 
@@ -376,12 +391,12 @@ def main(unused_argv):
         FLAGS.logan_beta = True
     if FLAGS.dataset_name != "":
         FLAGS.data_path = os.path.join(FLAGS.data_root, FLAGS.dataset_name, FLAGS.dataset_split + '*')
-    if not os.path.exists(os.path.join(FLAGS.data_root, FLAGS.dataset_name)):
+    if not os.path.exists(os.path.join(FLAGS.data_root, FLAGS.dataset_name)) or len(os.listdir(os.path.join(FLAGS.data_root, FLAGS.dataset_name))) == 0:
         print('No TF example data found at %s so creating it from raw data.' % os.path.join(FLAGS.data_root, FLAGS.dataset_name))
         write_data.process_dataset(FLAGS.dataset_name)
 
-    tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
-    tf.logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
+    logging.set_verbosity(logging.INFO) # choose what level of logging you want
+    logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
 
     # Change log_root to FLAGS.log_root/FLAGS.exp_name and create the dir if necessary
     FLAGS.log_root = os.path.join(FLAGS.actual_log_root, FLAGS.exp_name)
@@ -407,64 +422,87 @@ def main(unused_argv):
         raise Exception("The single_pass flag should only be True in decode mode")
 
     # Make a namedtuple hps, containing the values of the hyperparameters that the model needs
-    hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen']
+    hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std',
+                   'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps',
+                   'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen', 'randomize_sent_order']
     hps_dict = {}
     for key,val in FLAGS.__flags.iteritems(): # for each flag
         if key in hparam_list: # if it's in the list
-            hps_dict[key] = val # add it to the dict
+            hps_dict[key] = val.value # add it to the dict
     hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
 
-    if FLAGS.importance_fn == 'tfidf':
-        tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
-        if not os.path.exists(tfidf_model_path):
-            print('No TFIDF vectorizer model file found at %s, so fitting the model now.' % tfidf_model_path)
+    if FLAGS.logan_reservoir:
 
-            if not os.path.exists(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer')):
-                os.makedirs(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer'))
+        if FLAGS.importance_fn == 'tfidf':
+            tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
+            if not os.path.exists(tfidf_model_path):
+                print('No TFIDF vectorizer model file found at %s, so fitting the model now.' % tfidf_model_path)
 
-            decode_model_hps = hps	# This will be the hyperparameters for the decoder model
-            decode_model_hps = hps._replace(max_dec_steps=1, batch_size=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+                if not os.path.exists(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer')):
+                    os.makedirs(os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer'))
 
-            batcher = Batcher(FLAGS.data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass)
-            all_sentences = []
-            while True:
-                batch = batcher.next_batch()	# 1 example repeated across batch
-                if batch is None: # finished decoding dataset in single_pass mode
-                    break
-                all_sentences.extend(batch.raw_article_sents[0])
+                decode_model_hps = hps	# This will be the hyperparameters for the decoder model
+                decode_model_hps = hps._replace(max_dec_steps=1, batch_size=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
 
-            stemmer = PorterStemmer()
+                batcher = Batcher(FLAGS.data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass)
+                all_sentences = []
+                while True:
+                    batch = batcher.next_batch()	# 1 example repeated across batch
+                    if batch is None: # finished decoding dataset in single_pass mode
+                        break
+                    all_sentences.extend(batch.raw_article_sents[0])
 
-            class StemmedTfidfVectorizer(TfidfVectorizer):
-                def build_analyzer(self):
-                    analyzer = super(TfidfVectorizer, self).build_analyzer()
-                    return lambda doc: (stemmer.stem(w) for w in analyzer(doc))
+                stemmer = PorterStemmer()
 
-            tfidf_vectorizer = StemmedTfidfVectorizer(analyzer='word', stop_words='english', ngram_range=(1, 3), max_df=0.7)
-            sent_term_matrix = tfidf_vectorizer.fit_transform(all_sentences)
-            with open(tfidf_model_path, 'wb') as f:
-                dill.dump(tfidf_vectorizer, f)
+                class StemmedTfidfVectorizer(TfidfVectorizer):
+                    def build_analyzer(self):
+                        analyzer = super(TfidfVectorizer, self).build_analyzer()
+                        return lambda doc: (stemmer.stem(w) for w in analyzer(doc))
+
+                tfidf_vectorizer = StemmedTfidfVectorizer(analyzer='word', stop_words='english', ngram_range=(1, 3), max_df=0.7)
+                sent_term_matrix = tfidf_vectorizer.fit_transform(all_sentences)
+                with open(tfidf_model_path, 'wb') as f:
+                    dill.dump(tfidf_vectorizer, f)
 
 
-    if FLAGS.importance_fn == 'svr':
-        dataset_split = 'val' if FLAGS.train_on_val else 'train'
-        if not os.path.exists(FLAGS.save_path) or len(os.listdir(FLAGS.save_path)) == 0:
-            print('No importance_feature instances found at %s so creating it from raw data.' % FLAGS.save_path)
-            decode_model_hps = hps._replace(
-                max_dec_steps=1, batch_size=calc_features_batch_size)  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
-            cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_dm', dataset_split + '*')
-            batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass)
-            calc_features(cnn_dm_train_data_path, decode_model_hps, vocab, batcher)
-        importance_model_path = os.path.join(FLAGS.actual_log_root, FLAGS.importance_model_name + '.pickle')
-        if not os.path.exists(importance_model_path):
-            print('No importance_feature SVR model found at %s so training it now.' % importance_model_path)
-            features_list = importance_features.get_features_list(True)
-            sent_reps = run_importance.load_data(os.path.join(FLAGS.save_path, dataset_split + '*'), -1)
-            x_y = importance_features.features_to_array(sent_reps, features_list)
-            train_x, train_y = x_y[:,:-1], x_y[:,-1]
-            svr_model = run_importance.run_training(train_x, train_y)
-            with open(importance_model_path, 'wb') as f:
-                cPickle.dump(svr_model, f)
+        if FLAGS.importance_fn == 'svr' or FLAGS.importance_fn == 'svm':
+            if FLAGS.importance_fn == 'svr':
+                save_path = FLAGS.save_path
+                importance_model_name = FLAGS.importance_model_name
+            else:
+                save_path = FLAGS.svm_save_path
+                importance_model_name = FLAGS.svm_model_name
+            if FLAGS.both_cnn_dm:
+                save_path = save_path + '_both'
+                importance_model_name = importance_model_name + '_both'
+            else:
+                save_path = save_path + '_' + str(FLAGS.svr_num_documents)
+                importance_model_name = importance_model_name + '_' + str(FLAGS.svr_num_documents)
+
+            dataset_split = 'val' if FLAGS.train_on_val else 'train'
+            if not os.path.exists(save_path) or len(os.listdir(save_path)) == 0:
+                print('No importance_feature instances found at %s so creating it from raw data.' % save_path)
+                decode_model_hps = hps._replace(
+                    max_dec_steps=1, batch_size=calc_features_batch_size, mode='calc_features')  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+                if FLAGS.both_cnn_dm:
+                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_500_dm_500', dataset_split + '*')
+                else:
+                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_dm', dataset_split + '*')
+                batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass, cnn_500_dm_500=FLAGS.both_cnn_dm)
+                calc_features(cnn_dm_train_data_path, decode_model_hps, vocab, batcher, save_path)
+            importance_model_path = os.path.join(FLAGS.actual_log_root, importance_model_name + '.pickle')
+            if not os.path.exists(importance_model_path):
+                print('No importance_feature SVR model found at %s so training it now.' % importance_model_path)
+                features_list = importance_features.get_features_list(True)
+                sent_reps = run_importance.load_data(os.path.join(save_path, dataset_split + '*'), FLAGS.svr_num_documents)
+                print 'Loaded %d sentences representations' % len(sent_reps)
+                x_y = importance_features.features_to_array(sent_reps, features_list)
+                train_x, train_y = x_y[:,:-1], x_y[:,-1]
+                svr_model = run_importance.run_training(train_x, train_y)
+                with open(importance_model_path, 'wb') as f:
+                    cPickle.dump(svr_model, f)
+
+
 
     # Create a batcher object that will create minibatches of data
     batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
@@ -536,7 +574,7 @@ def main(unused_argv):
 
 if __name__ == '__main__':
     try:
-        tf.app.run()
+        app.run(main)
     except util.InfinityValueError as e:
         sys.exit(100)
     except:

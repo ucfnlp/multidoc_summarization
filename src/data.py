@@ -105,8 +105,27 @@ class Vocab(object):
             for i in xrange(self.size()):
                 writer.writerow({"word": self._id_to_word[i]})
 
+def is_valid_example(e):
+    abstract_texts = []
+    raw_article_sents = []
+    try:
+        article_text = e.features.feature['article'].bytes_list.value[0] # the article text was saved under the key 'article' in the data files
+        for abstract in e.features.feature['abstract'].bytes_list.value:
+            abstract_texts.append(abstract) # the abstract text was saved under the key 'abstract' in the data files
+        if 'doc_indices' not in e.features.feature or len(e.features.feature['doc_indices'].bytes_list.value) == 0:
+            num_words = len(article_text.split())
+            doc_indices_text = '0 ' * num_words
+        else:
+            doc_indices_text = e.features.feature['doc_indices'].bytes_list.value[0]
+        for sent in e.features.feature['raw_article_sents'].bytes_list.value:
+            raw_article_sents.append(sent) # the abstract text was saved under the key 'abstract' in the data files
+    except ValueError:
+        return False
+    if len(article_text)==0: # See https://github.com/abisee/pointer-generator/issues/1
+        return False
+    return True
 
-def example_generator(data_path, single_pass):
+def example_generator(data_path, single_pass, cnn_500_dm_500):
     """Generates tf.Examples from data files.
 
         Binary data format: <length><blob>. <length> represents the byte size
@@ -130,13 +149,19 @@ def example_generator(data_path, single_pass):
         else:
             random.shuffle(filelist)
         for f in filelist:
+            valid_ex_count = 0
             reader = open(f, 'rb')
             while True:
+                if cnn_500_dm_500 and valid_ex_count >= 500:
+                    break
                 len_bytes = reader.read(8)
                 if not len_bytes: break # finished reading this file
                 str_len = struct.unpack('q', len_bytes)[0]
                 example_str = struct.unpack('%ds' % str_len, reader.read(str_len))[0]
-                yield example_pb2.Example.FromString(example_str)
+                e = example_pb2.Example.FromString(example_str)
+                if is_valid_example(e):
+                    valid_ex_count += 1
+                yield e
         if single_pass:
             print "example_generator completed reading all datafiles. No more data."
             break

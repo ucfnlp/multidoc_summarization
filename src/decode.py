@@ -26,20 +26,23 @@ import data
 import json
 import pyrouge
 import util
-import logging
 from sumy.nlp.tokenizers import Tokenizer
 import numpy as np
 import itertools
 from tqdm import tqdm
 import warnings
+from absl import flags
+from absl import logging
+import logging as log
 
 import importance_features
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 SECS_UNTIL_NEW_CKPT = 60	# max number of seconds before loading new checkpoint
 threshold = 0.5
 prob_to_keep = 0.33
+svm_prob_to_keep = 0.1
 
 
 class BeamSearchDecoder(object):
@@ -97,10 +100,10 @@ class BeamSearchDecoder(object):
             #     continue
             if batch is None: # finished decoding dataset in single_pass mode
                 assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
-                tf.logging.info("Decoder has finished reading dataset for single_pass.")
-                tf.logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
+                logging.info("Decoder has finished reading dataset for single_pass.")
+                logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
                 results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-                print("Results_dict: ", results_dict)
+                # print("Results_dict: ", results_dict)
                 rouge_log(results_dict, self._decode_dir)
                 return
 
@@ -144,7 +147,7 @@ class BeamSearchDecoder(object):
                 # Check if SECS_UNTIL_NEW_CKPT has elapsed; if so return so we can load a new checkpoint
                 t1 = time.time()
                 if t1-t0 > SECS_UNTIL_NEW_CKPT:
-                    tf.logging.info('We\'ve been decoding with same checkpoint for %i seconds. Time to load new checkpoint', t1-t0)
+                    logging.info('We\'ve been decoding with same checkpoint for %i seconds. Time to load new checkpoint', t1-t0)
                     _ = util.load_ckpt(self._saver, self._sess)
                     t0 = time.time()
 
@@ -190,7 +193,7 @@ class BeamSearchDecoder(object):
                 f.write(sent+"\n")
                 # f.write(sent) if idx==len(decoded_sents)-1 else f.write(sent+"\n")
 
-        tf.logging.info("Wrote example %i to file" % ex_index)
+        logging.info("Wrote example %i to file" % ex_index)
 
 
     def write_for_attnvis(self, article, abstract, decoded_words, attn_dists, p_gens):
@@ -217,9 +220,9 @@ class BeamSearchDecoder(object):
         output_fname = os.path.join(self._decode_dir, 'attn_vis_data.json')
         with open(output_fname, 'w') as output_file:
             json.dump(to_write, output_file)
-        tf.logging.info('Wrote visualization data to %s', output_fname)
+        logging.info('Wrote visualization data to %s', output_fname)
 
-    def calc_importance_features(self, data_path, hps):
+    def calc_importance_features(self, data_path, hps, model_save_path, docs_desired):
         """Calculate sentence-level features and save as a dataset"""
         data_path_filter_name = os.path.basename(data_path)
         if 'train' in data_path_filter_name:
@@ -235,11 +238,12 @@ class BeamSearchDecoder(object):
         else:
             inst_per_file = 1
         filelist = glob.glob(data_path)
-        num_documents_desired = 1000
+        num_documents_desired = docs_desired
         pbar = tqdm(initial=0, total=num_documents_desired)
 
         t0 = time.time()
         instances = []
+        sentences = []
         counter = 0
         doc_counter = 0
         file_counter = 0
@@ -256,7 +260,7 @@ class BeamSearchDecoder(object):
                 # instances = instances[:10000]
                 # save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
                 # np.savez_compressed(os.path.join(save_path), instances)
-                save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
+                save_path = os.path.join(model_save_path, data_split + '_%06d'%file_counter)
                 with open(save_path, 'wb') as f:
                     cPickle.dump(instances, f)
                 print('Saved features at %s' % save_path)
@@ -266,15 +270,16 @@ class BeamSearchDecoder(object):
                 # file_counter += 1
 
             if batch is None: # finished decoding dataset in single_pass mode
-                assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
-                tf.logging.info("Decoder has finished reading dataset for single_pass.")
-                pbar.close()
-                if len(instances) > 0:
-                    instances = np.stack(instances)
-                    save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
-                    np.savez_compressed(os.path.join(save_path), instances)
-                    tqdm.write('Saved features at %s' % save_path)
-                return
+                raise Exception('We havent reached the num docs desired (%d), instead we reached (%d)' % (num_documents_desired, doc_counter))
+                # assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
+                # logging.info("Decoder has finished reading dataset for single_pass.")
+                # pbar.close()
+                # if len(instances) > 0:
+                #     instances = np.stack(instances)
+                #     save_path = os.path.join(model_save_path, data_split + '_%06d'%file_counter)
+                #     np.savez_compressed(os.path.join(save_path), instances)
+                #     tqdm.write('Saved features at %s' % save_path)
+                # return
 
 
             batch_enc_states, _ = self._model.run_encoder(self._sess, batch)
@@ -284,8 +289,9 @@ class BeamSearchDecoder(object):
 
                 tokenizer = Tokenizer('english')
                 # List of lists of words
-                enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
-                enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
+                enc_sentences, enc_tokens = batch.tokenized_sents[batch_idx], batch.word_ids_sents[batch_idx]
+                enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[batch_idx])
+                enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
 
                 sent_representations_separate = importance_features.get_separate_enc_states(self._model, self._sess, enc_sentences, self._vocab, hps)
                 # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
@@ -297,20 +303,30 @@ class BeamSearchDecoder(object):
                 sent_indices = enc_sent_indices
                 sent_reps = importance_features.get_importance_features_for_article(
                     enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate, use_cluster_dist=FLAGS.use_cluster_dist)
-                y = importance_features.get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
+                y, y_hat = importance_features.get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
+                binary_y = importance_features.get_best_ROUGE_L_for_each_abs_sent(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
                 for rep_idx, rep in enumerate(sent_reps):
                     rep.y = y[rep_idx]
+                    rep.binary_y = binary_y[rep_idx]
 
-                for rep in sent_reps:
+                for rep_idx, rep in enumerate(sent_reps):
                     # if FLAGS.use_cluster_dist:
                     #     cluster_rep_i = [cluster_rep[i]]
                     # else:
                     #     cluster_rep_i = cluster_rep
                     # Keep all sentences with importance above threshold. All others will be kept with a probability of prob_to_keep
-                    if FLAGS.no_balancing or rep.y >= threshold or np.random.random() <= prob_to_keep:
-                        # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
-                        #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
-                        instances.append(rep)
+                    if FLAGS.importance_fn == 'svr':
+                        if FLAGS.no_balancing or rep.y >= threshold or np.random.random() <= prob_to_keep:
+                            # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
+                            #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
+                            instances.append(rep)
+                            sentences.append(sentences)
+                    elif FLAGS.importance_fn == 'svm':
+                        if FLAGS.svm_no_balancing or rep.binary_y >= threshold or np.random.random() <= svm_prob_to_keep:
+                            # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
+                            #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
+                            instances.append(rep)
+                            sentences.append(sentences)
                 # for inst in x_y
                 # self.write_for_rouge
                 # print 'Example %d features processed' % counter
@@ -324,9 +340,9 @@ class BeamSearchDecoder(object):
 def print_results(article, abstract, decoded_output):
     """Prints the article, the reference summmary and the decoded summary to screen"""
     print ""
-    tf.logging.info('ARTICLE:	%s', article)
-    tf.logging.info('REFERENCE SUMMARY: %s', abstract)
-    tf.logging.info('GENERATED SUMMARY: %s', decoded_output)
+    logging.info('ARTICLE:	%s', article)
+    logging.info('REFERENCE SUMMARY: %s', abstract)
+    logging.info('GENERATED SUMMARY: %s', decoded_output)
     print ""
 
 
@@ -345,7 +361,7 @@ def rouge_eval(ref_dir, dec_dir):
     r.system_filename_pattern = '(\d+)_decoded.txt'
     r.model_dir = ref_dir
     r.system_dir = dec_dir
-    logging.getLogger('global').setLevel(logging.WARNING) # silence pyrouge logging
+    log.getLogger('global').setLevel(log.WARNING) # silence pyrouge logging
     rouge_args = ['-e', '/home/logan/ROUGE/RELEASE-1.5.5/data',
          '-c',
          '95',
@@ -378,9 +394,9 @@ def rouge_log(results_dict, dir_to_write):
             val_cb = results_dict[key_cb]
             val_ce = results_dict[key_ce]
             log_str += "%s: %.4f with confidence interval (%.4f, %.4f)\n" % (key, val, val_cb, val_ce)
-    tf.logging.info(log_str) # log to screen
+    logging.info(log_str) # log to screen
     results_file = os.path.join(dir_to_write, "ROUGE_results.txt")
-    tf.logging.info("Writing final ROUGE results to %s...", results_file)
+    logging.info("Writing final ROUGE results to %s...", results_file)
     with open(results_file, "w") as f:
         f.write(log_str)
 

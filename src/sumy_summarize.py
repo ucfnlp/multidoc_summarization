@@ -7,9 +7,10 @@ from sumy.summarizers.sum_basic import SumBasicSummarizer
 import os
 from tqdm import tqdm
 import pyrouge
-import logging
+import logging as log
 import nltk
 import glob
+from absl import logging
 
 dataset = 'TAC'
 
@@ -68,7 +69,7 @@ def rouge_eval(ref_dir, dec_dir):
     r.system_filename_pattern = '(\d+)_decoded.txt'
     r.model_dir = ref_dir
     r.system_dir = dec_dir
-    logging.getLogger('global').setLevel(logging.WARNING) # silence pyrouge logging
+    log.getLogger('global').setLevel(log.WARNING) # silence pyrouge logging
     rouge_args = ['-e', '/home/logan/ROUGE/RELEASE-1.5.5/data',
          '-c',
          '95',
@@ -143,7 +144,7 @@ for summary_method in summary_methods:
 
         summary_tokenized = []
         for sent in summary:
-            summary_tokenized.append(' '.join(nltk.tokenize.word_tokenize(sent)))
+            summary_tokenized.append(' '.join(nltk.tokenize.word_tokenize(sent.lower())))
         with open(os.path.join(abstract_dir, article_name)) as f:
             abstracts_text = f.read()
         abstracts = abstracts_text.split('\n\n')

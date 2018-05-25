@@ -1,5 +1,9 @@
+# -*- coding: utf8 -*-
+
 import glob
 import struct
+
+import shutil
 from tensorflow.core.example import example_pb2
 import nltk
 import os
@@ -8,6 +12,8 @@ import re
 import subprocess
 import io
 import tensorflow as tf
+from absl import flags
+from absl import app
 import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
@@ -41,7 +47,7 @@ sys.setdefaultencoding('utf8')
 #     write_example(article, abstract, writer)
 
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 
 data_dirs = {
@@ -62,11 +68,10 @@ data_dirs = {
         'abstract_dir': '/home/logan/data/multidoc_summarization/DUC/past_duc/duc2004/duc2004_results/ROUGE/eval/models/2'
     },
     'duc_2003': {
-        'article_dir': '/home/logan/data/multidoc_summarization/DUC/Original/DUC2003_Summarization_Documents/duc2004_testdata/tasks1and2/duc2004_tasks1and2_docs/docs',
-        'abstract_dir': '/home/logan/data/multidoc_summarization/DUC/past_duc/duc2003/duc2004_results/ROUGE/eval/models/2'
+        'article_dir': '/home/logan/data/multidoc_summarization/DUC/Original/DUC2003_Summarization_Documents/duc2003_testdata/task2/docs',
+        'abstract_dir': '/home/logan/data/multidoc_summarization/DUC/past_duc/duc2003/results/detagged.duc2003.abstracts/models'
     }
 }
-
 
 use_stanford_tokenize = False
 
@@ -126,6 +131,9 @@ def process_sent(sent):
     return tokenized_sent
 
 def process_dataset(dataset_name):
+    if dataset_name == 'duc_tac':
+        combine_duc_2003_tac_2008_tac_2010()
+        return
     is_tac = 'tac' in dataset_name
     article_dir = data_dirs[dataset_name]['article_dir']
     abstract_dir = data_dirs[dataset_name]['abstract_dir']
@@ -140,6 +148,45 @@ def process_dataset(dataset_name):
             write_example(article, abstracts, doc_indices, raw_article_sents, writer)
         out_idx += 1
 
+def combine_duc_2003_tac_2008_tac_2010():
+    out_dir = os.path.join('/home/logan/data/multidoc_summarization/tf_examples', 'duc_tac')
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    out_idx = 1
+    for dataset_name in ['duc_2003', 'tac_2008', 'tac_2010']:
+        example_dir = os.path.join('/home/logan/data/multidoc_summarization/tf_examples', dataset_name)
+        if not os.path.exists(example_dir) or len(os.listdir(example_dir)) == 0:
+            process_dataset(dataset_name)
+        example_files = glob.glob(os.path.join(example_dir,'*'))
+        for old_file in example_files:
+            new_file = os.path.join(out_dir, 'test_{:03d}.bin'.format(out_idx))
+            shutil.copyfile(old_file, new_file)
+            out_idx += 1
+    a=0
+
+def concatenate_p_tags(soup):
+    lines = []
+    for tag in soup.findAll('p'):
+        lines.append(tag.renderContents().replace('\n', ' ').strip())
+    contents = ' '.join(lines)
+    return contents
+
+def has_p_tags(soup):
+    return soup.find('p')
+
+def fix_exceptions(sentences):
+    new_sentences = []
+    for sent in sentences:
+        split_sents = sent.split('Hun Sen. ')
+        if len(split_sents) == 2:
+            sent1 = split_sents[0] + 'Hun Sen.'
+            sent2 = split_sents[1].strip()
+            new_sentences.append(sent1)
+            if sent2 != '':
+                new_sentences.append(sent2)
+        else:
+            new_sentences.append(sent)
+    return new_sentences
 
 def get_article_abstract_sumy(multidoc_dirname, article_dir, abstract_dir):
     if FLAGS.use_TAC:
@@ -209,76 +256,77 @@ def get_article(article_dir, multidoc_dirname, is_tac, full_article=True, remove
         else:
             multidoc_dir = os.path.join(article_dir, multidoc_dirname)
 
-        doc_names = sorted(os.listdir(multidoc_dir))
+        doc_names = os.listdir(multidoc_dir)
+        doc_names = sorted([f for f in doc_names if os.path.isfile(os.path.join(multidoc_dir, f)) and '.py' not in f])
         article = ''
         doc_indices = ''
         raw_article_sents = []
         for doc_idx, doc_name in enumerate(doc_names):
-            if 'ENG' in doc_name or not is_tac:
-                doc_path = os.path.join(multidoc_dir, doc_name)
-                with open(doc_path) as f:
-                    article_text = f.read()
-                soup = BeautifulSoup(article_text, 'html.parser')
-                if is_tac:
-                    lines = []
-                    for tag in soup.findAll('p'):
-                        lines.append(tag.renderContents().replace('\n', ' ').strip())
-                    contents = ' '.join(lines)
-                    if use_stanford_tokenize:
-                        sentences = stanford_corenlp_tokenize(contents)
-                        if not full_article:
-                            sentences = sentences[:5]
-                        for sent in sentences:
-                            sentence_text = ' '.join(sent)
-                            article += sentence_text + ' '
+            doc_path = os.path.join(multidoc_dir, doc_name)
+            with open(doc_path) as f:
+                article_text = f.read()
+            soup = BeautifulSoup(article_text, 'html.parser')
+            if is_tac:
+                contents = concatenate_p_tags(soup)
+                if use_stanford_tokenize:
+                    sentences = stanford_corenlp_tokenize(contents)
+                    if not full_article:
+                        sentences = sentences[:5]
+                    for sent in sentences:
+                        sentence_text = ' '.join(sent)
+                        article += sentence_text + ' '
 
-                            doc_indices_for_tokens = [doc_idx] * len(sent)
-                            doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
-                            doc_indices += doc_indices_str + ' '
-                    else:
-                        sentences = nltk.tokenize.sent_tokenize(contents)
-                        if not full_article:
-                            sentences = sentences[:5]
-                        for orig_sent in sentences:
-                            tokenized_sent = process_sent(orig_sent)
-                            if remove_quotes and is_quote(tokenized_sent):
-                                continue
-                            sent = ' '.join(tokenized_sent)
-                            article += sent + ' '
+                        doc_indices_for_tokens = [doc_idx] * len(sent)
+                        doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                        doc_indices += doc_indices_str + ' '
+                else:
+                    sentences = nltk.tokenize.sent_tokenize(contents)
+                    if not full_article:
+                        sentences = sentences[:5]
+                    for orig_sent in sentences:
+                        tokenized_sent = process_sent(orig_sent)
+                        if remove_quotes and is_quote(tokenized_sent):
+                            continue
+                        sent = ' '.join(tokenized_sent)
+                        article += sent + ' '
 
-                            doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
-                            doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
-                            doc_indices += doc_indices_str + ' '
-                            raw_article_sents.append(orig_sent)
+                        doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
+                        doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                        doc_indices += doc_indices_str + ' '
+                        raw_article_sents.append(orig_sent)
+            else:
+                if has_p_tags(soup):
+                    contents = concatenate_p_tags(soup)
                 else:
                     contents = soup.findAll('text')[0].renderContents().replace('\n', ' ').strip()
                     contents = ' '.join(contents.split())
-                    if use_stanford_tokenize:
-                        sentences = stanford_corenlp_tokenize(contents)
-                        if not full_article:
-                            sentences = sentences[:5]
-                        for sent in sentences:
-                            sentence_text = ' '.join(sent)
-                            article += sentence_text + ' '
+                if use_stanford_tokenize:
+                    sentences = stanford_corenlp_tokenize(contents)
+                    if not full_article:
+                        sentences = sentences[:5]
+                    for sent in sentences:
+                        sentence_text = ' '.join(sent)
+                        article += sentence_text + ' '
 
-                            doc_indices_for_tokens = [doc_idx] * len(sent)
-                            doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
-                            doc_indices += doc_indices_str + ' '
-                    else:
-                        sentences = nltk.tokenize.sent_tokenize(contents)
-                        if not full_article:
-                            sentences = sentences[:5]
-                        for orig_sent in sentences:
-                            tokenized_sent = process_sent(orig_sent)
-                            if remove_quotes and is_quote(tokenized_sent):
-                                continue
-                            sent = ' '.join(tokenized_sent)
-                            article += sent + ' '
+                        doc_indices_for_tokens = [doc_idx] * len(sent)
+                        doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                        doc_indices += doc_indices_str + ' '
+                else:
+                    sentences = nltk.tokenize.sent_tokenize(contents)
+                    fixed_sentences = fix_exceptions(sentences)
+                    if not full_article:
+                        fixed_sentences = fixed_sentences[:5]
+                    for orig_sent in fixed_sentences:
+                        tokenized_sent = process_sent(orig_sent)
+                        if remove_quotes and is_quote(tokenized_sent):
+                            continue
+                        sent = ' '.join(tokenized_sent)
+                        article += sent + ' '
 
-                            doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
-                            doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
-                            doc_indices += doc_indices_str + ' '
-                            raw_article_sents.append(orig_sent)
+                        doc_indices_for_tokens = [doc_idx] * len(tokenized_sent)
+                        doc_indices_str = ' '.join(str(x) for x in doc_indices_for_tokens)
+                        doc_indices += doc_indices_str + ' '
+                        raw_article_sents.append(orig_sent)
         return article, doc_indices, raw_article_sents
 
 
@@ -292,22 +340,24 @@ def get_article_abstract(multidoc_dirname, article_dir, abstract_dir, is_tac, fu
     if is_tac:
         abstract_doc_name = 'D' + doc_num + '-A'
     else:
-        abstract_doc_name = 'D' + doc_num
+        abstract_doc_name = 'D' + doc_num + '.M'
     selected_doc_names = [doc_name for doc_name in all_doc_names if abstract_doc_name in doc_name]
     if len(selected_doc_names) == 0:
         raise Exception('no docs found for doc ' + doc_num)
     for selected_doc_name in selected_doc_names:
-        with open(os.path.join(abstract_dir, selected_doc_name)) as f:
+        # with open(os.path.join(abstract_dir, selected_doc_name), encoding='utf-8') as f:
+        with io.open(os.path.join(abstract_dir, selected_doc_name), encoding='utf-8', errors='ignore') as f:
             abstract_lines = f.readlines()
         abstract = ''
         for line in abstract_lines:
             line = line.lower()
-            line = line.replace('\x92', "'")
+            line = line.replace(u'\x92', "'")
             tokenized_sent = nltk.word_tokenize(line)
             tokenized_sent = [fix_bracket_token(token) for token in tokenized_sent]
             sent = ' '.join(tokenized_sent)
             abstract += '<s> ' + sent + ' </s> '
         abstract = abstract.encode('utf-8').strip()
+        abstract = abstract.strip()
         abstracts.append(abstract)
     article = article.encode('utf-8').strip()
     return article, abstracts, doc_indices, raw_article_sents
@@ -397,12 +447,12 @@ def main():
     
 if __name__ == '__main__':
 
-    tf.app.flags.DEFINE_boolean('for_clustering_single_doc', False, 'Whether to use clustering format')
-    tf.app.flags.DEFINE_boolean('for_sumy', False, 'Whether to use clustering format')
-    tf.app.flags.DEFINE_boolean('use_TAC', True, 'Whether to use TAC or DUC')
-    tf.app.flags.DEFINE_boolean('full_article', True, '')
-    tf.app.flags.DEFINE_boolean('remove_quotes', True, 'Whether to use clustering format')
-    tf.app.run()
+    flags.DEFINE_boolean('for_clustering_single_doc', False, 'Whether to use clustering format')
+    flags.DEFINE_boolean('for_sumy', False, 'Whether to use clustering format')
+    flags.DEFINE_boolean('use_TAC', False, 'Whether to use TAC or DUC')
+    flags.DEFINE_boolean('full_article', True, '')
+    flags.DEFINE_boolean('remove_quotes', True, 'Whether to use clustering format')
+    app.run(main)
     
     
     

@@ -7,13 +7,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 from lex_rank_importance import LexRankSummarizer
 import tensorflow as tf
 import batcher
+from absl import flags
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 class SentRep:
     def __init__(self, abs_sent_indices, rel_sent_indices_normalized, rel_sent_indices_0_to_10, sent_lens, sent_lens_normalized,
         sent_representations_average, sent_representations_fw_bw, sent_representations_separate, cluster_rep_sent_average, 
-        cluster_rep_sent_fw_bw, cluster_rep_sent_separate, lexrank_score):
+        cluster_rep_sent_fw_bw, cluster_rep_sent_separate, dist_average, dist_fw_bw, dist_separate, lexrank_score):
         self.abs_sent_indices = abs_sent_indices
         self.rel_sent_indices_normalized = rel_sent_indices_normalized
         self.rel_sent_indices_0_to_10 = rel_sent_indices_0_to_10
@@ -25,8 +26,12 @@ class SentRep:
         self.cluster_rep_sent_average = cluster_rep_sent_average
         self.cluster_rep_sent_fw_bw = cluster_rep_sent_fw_bw
         self.cluster_rep_sent_separate = cluster_rep_sent_separate
+        self.dist_average = dist_average
+        self.dist_fw_bw = dist_fw_bw
+        self.dist_separate = dist_separate
         self.lexrank_score = lexrank_score
         self.y = None
+        self.binary_y = None
 
 def get_features_list(include_y):
     features = []
@@ -40,18 +45,24 @@ def get_features_list(include_y):
     if FLAGS.sent_vec_feature_method == 'average':
         features.append('sent_representations_average')
         features.append('cluster_rep_sent_average')
+        features.append('dist_average')
     elif FLAGS.sent_vec_feature_method == 'fw_bw':
         features.append('sent_representations_fw_bw')
         features.append('cluster_rep_sent_fw_bw')
+        features.append('dist_fw_bw')
     elif FLAGS.sent_vec_feature_method == 'separate':
         features.append('sent_representations_separate')
         features.append('cluster_rep_sent_separate')
+        features.append('dist_separate')
     else:
         raise Exception('Flag sent_vec_feature_method (%s) must be one of {average, fw_bw, separate}' % FLAGS.sent_vec_feature_method)
     if FLAGS.lexrank_as_feature:
         features.append('lexrank_score')
     if include_y:
-        features.append('y')
+        if FLAGS.importance_fn == 'svr':
+            features.append('y')
+        else:
+            features.append('binary_y')
 
     return features
 
@@ -61,7 +72,7 @@ def get_importance_features_for_article(enc_states, enc_sentences, sent_indices,
     # sent_indices = list(range(len(enc_sentences)))
     sent_lens, sent_lens_normalized = get_sent_lens(enc_sentences)
     sent_representations_average, sent_representations_fw_bw = get_sent_representations(enc_states, enc_sentences)
-    cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate = get_cluster_representations(
+    cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate, dist_average, dist_fw_bw, dist_separate = get_cluster_representations(
         sent_representations_average, sent_representations_fw_bw, sent_representations_separate)
     summarizer = LexRankSummarizer()
     lexrank_score = summarizer.get_importances(enc_sentences, tokenizer)
@@ -73,11 +84,12 @@ def get_importance_features_for_article(enc_states, enc_sentences, sent_indices,
         sent_reps.append(SentRep(abs_sent_indices[i], rel_sent_indices_normalized[i], rel_sent_indices_0_to_10[i],
             sent_lens[i], sent_lens_normalized[i],
             sent_representations_average[i], sent_representations_fw_bw[i], sent_representations_separate[i],
-            cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate, lexrank_score[i]))
+            cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate, 
+            dist_average[i], dist_fw_bw[i], dist_separate[i], lexrank_score[i]))
     return sent_reps
 
 # def features_to_array(sent_indices, abs_sent_indices, rel_sent_indices, sent_lens, lexrank_score, sent_reps, cluster_rep):
-#     if FLAGS.use_cluster_dist:
+#     if FLAGS.use_dist:
 #         cluster_representations = np.expand_dims(cluster_rep, 1)
 #     else:
 #         cluster_representations = np.tile(cluster_rep, [len(sent_indices), 1])
@@ -149,7 +161,7 @@ def get_sent_lens(enc_sentences):
 
 
 def get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, vocab, enc_tokens):
-    human_tokens = get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab)  # list (of 4 human summaries) of list of token ids
+    human_tokens = get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab, split_sents=False)  # list (of 4 human summaries) of list of token ids
     # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
     metric = 'recall' if FLAGS.rouge_l_prec_rec else 'f1'
     # similarity_matrix = util.Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, metric=metric)
@@ -157,7 +169,37 @@ def get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, vocab, enc_tokens):
     importances_hat = util.Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
     logan_importances = special_squash(importances_hat)
     # logan_importances = importances_hat
-    return logan_importances
+    return logan_importances, importances_hat
+
+def get_best_ROUGE_L_for_each_abs_sent(art_oovs, all_original_abstracts_sents, vocab, enc_tokens):
+    human_tokens = get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab, split_sents=True)  # list (of 4 human summaries) of list of token ids
+    if len(human_tokens) > 1:
+        raise Exception('human_tokens (len %d) should have 1 entry, because cnn/dm has one abstract per article.' % len(human_tokens))
+    human_tokens = human_tokens[0]
+    # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
+    metric = 'recall' if FLAGS.rouge_l_prec_rec else 'f1'
+    similarity_matrix = util.Similarity_Functions.rouge_l_similarity_matrix(enc_tokens, human_tokens, vocab, metric=metric)
+    best_indices = []
+    for col_idx in range(similarity_matrix.shape[1]):
+        col = similarity_matrix[:,col_idx]
+        sorted_indices = np.argsort(col)[::-1]
+        idx = 0
+        while sorted_indices[idx] in best_indices:
+            idx += 1
+            if idx >= len(sorted_indices):       #  If all sentences have been used then just continue
+                idx = 0
+                break
+        best_idx = sorted_indices[idx]
+        best_indices.append(best_idx)
+    binary_y = np.zeros([len(enc_tokens)], dtype=float)
+    binary_y[best_indices] = 1
+    return binary_y
+
+def binarize_y(y, k):
+    binary_y = np.zeros_like(y, dtype=float)
+    top_k_indices = y.argsort()[-1*k:][::-1]
+    binary_y[top_k_indices] = 1.
+    return binary_y
 
 def get_enc_sents_and_tokens_with_cutoff_length(enc_batch_extend_vocab, tokenizer,
                                                 art_oovs, vocab, doc_indices, skip_failures, chunk_size=-1, cutoff_len=1000000):
@@ -206,12 +248,15 @@ def get_enc_sents_and_tokens_with_cutoff_length(enc_batch_extend_vocab, tokenize
     return select_enc_sentences, select_enc_tokens, select_sent_indices
 
 
-def get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab):
+def get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab, split_sents=False):
     def get_all_summ_tokens(all_summs):
         return [get_summ_tokens(summ) for summ in all_summs]
     def get_summ_tokens(summ):
         summ_tokens = [get_sent_tokens(sent) for sent in summ]
-        return list(itertools.chain.from_iterable(summ_tokens))     # combines all sentences into one list of tokens for summary
+        if split_sents:
+            return summ_tokens
+        else:
+            return list(itertools.chain.from_iterable(summ_tokens))     # combines all sentences into one list of tokens for summary
     def get_sent_tokens(sent):
         words = sent.split()
         return data.abstract2ids(words, vocab, art_oovs)
@@ -239,7 +284,7 @@ def get_sent_representations(enc_states, enc_sentences):
 
 def get_cluster_representations(sent_representations_average, sent_representations_fw_bw, sent_representations_separate):
     # # cluster_representation = get_fw_bw_rep(enc_states, 0, len(enc_states)-1)
-    # # if use_cluster_dist:
+    # # if use_dist:
     # cluster_mean = np.mean(sent_reps, axis=0)
     # cluster_rep = cosine_similarity(sent_reps, cluster_mean.reshape(1,-1))
     # cluster_rep = np.squeeze(cluster_rep)
@@ -247,7 +292,11 @@ def get_cluster_representations(sent_representations_average, sent_representatio
     cluster_rep_sent_average = np.mean(sent_representations_average, axis=0)
     cluster_rep_sent_fw_bw = np.mean(sent_representations_fw_bw, axis=0)
     cluster_rep_sent_separate = np.mean(sent_representations_separate, axis=0)
-    return cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate
+
+    dist_average = np.squeeze(cosine_similarity(sent_representations_average, [cluster_rep_sent_average]))
+    dist_fw_bw = np.squeeze(cosine_similarity(sent_representations_fw_bw, [cluster_rep_sent_fw_bw]))
+    dist_separate = np.squeeze(cosine_similarity(sent_representations_separate, [cluster_rep_sent_separate]))
+    return cluster_rep_sent_average, cluster_rep_sent_fw_bw, cluster_rep_sent_separate, dist_average, dist_fw_bw, dist_separate
 
 
 def tokens_to_continuous_text(tokens, vocab, art_oovs):

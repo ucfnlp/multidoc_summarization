@@ -21,10 +21,12 @@ import time
 import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-FLAGS = tf.app.flags.FLAGS
+from absl import flags
+FLAGS = flags.FLAGS
 import itertools
 from matplotlib import pyplot as plt
 import data
+from absl import logging
 
 def get_config():
     """Returns config for tf.session"""
@@ -42,16 +44,19 @@ def load_ckpt(saver, sess, ckpt_dir="train"):
             else:
                 ckpt_dir = os.path.join(FLAGS.log_root, ckpt_dir)
             ckpt_state = tf.train.get_checkpoint_state(ckpt_dir, latest_filename=latest_filename)
-            tf.logging.info('Loading checkpoint %s', ckpt_state.model_checkpoint_path)
+            logging.info('Loading checkpoint %s', ckpt_state.model_checkpoint_path)
             saver.restore(sess, ckpt_state.model_checkpoint_path)
             return ckpt_state.model_checkpoint_path
         except:
-            tf.logging.info("Failed to load checkpoint from %s. Sleeping for %i secs...", ckpt_dir, 10)
+            logging.info("Failed to load checkpoint from %s. Sleeping for %i secs...", ckpt_dir, 10)
             time.sleep(10)
 
 class InfinityValueError(ValueError): pass
 
 
+def create_dirs(dir):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
 
 def flatten_list_of_lists(list_of_lists):
     return list(itertools.chain.from_iterable(list_of_lists))
@@ -195,12 +200,28 @@ class Similarity_Functions:
         abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
         for article_sent_idx, article_sent in enumerate(article_sents):
             rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
+            # if eval_sents_indiv:
+            #     abs_similarities = []
+            #     for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
+            #         rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
+            #         abs_similarities.append(rouge_l)
+            #         sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
+            # else:
             sentence_similarity[article_sent_idx] = rouge_l
         return sentence_similarity
-        #     for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
-        #         rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
-        #         sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
-        # return sentence_similarity_matrix
+
+    @classmethod
+    def rouge_l_similarity_matrix(cls, article_sents, abstract_sents, vocab, metric='f1'):
+        sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
+        abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
+        for article_sent_idx, article_sent in enumerate(article_sents):
+            rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
+            abs_similarities = []
+            for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
+                rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
+                abs_similarities.append(rouge_l)
+                sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
+        return sentence_similarity_matrix
 
 
     @classmethod

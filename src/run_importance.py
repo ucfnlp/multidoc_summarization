@@ -48,18 +48,25 @@ import cPickle
 from tensorflow.python import debug as tf_debug
 from tqdm import tqdm
 from tqdm import trange
+from absl import flags
+from absl import app
+from absl import logging
 
-FLAGS = tf.app.flags.FLAGS
+FLAGS = flags.FLAGS
 
 
 
 def run_training(x, y):
-    tf.logging.info("starting run_training")
-    clf = svm.SVR()
+    logging.info("starting run_training")
+    if FLAGS.importance_fn == 'svr':
+        clf = svm.SVR()
+    elif FLAGS.importance_fn == 'svm':
+        clf = svm.SVC()
+
     clf.fit(x, y)
     return clf
 
-def load_data(data_path, num_instances):
+def load_data(data_path, num_instances, half_cnn_half_dm=False):
     print 'Loading data'
     filelist = glob.glob(data_path) # get the list of datafiles
     assert filelist, ('Error: Empty filelist at %s' % data_path) # check filelist isn't empty
@@ -80,7 +87,7 @@ def load_data(data_path, num_instances):
     return instances
 
 def predict_rouge_l(clf, x):
-    tf.logging.info("starting prediction")
+    logging.info("starting prediction")
     pred_y = clf.predict(x)
     return pred_y
 
@@ -97,8 +104,8 @@ def main(unused_argv):
         raise Exception("Problem with flags: %s" % unused_argv)
 
     tf.set_random_seed(111) # a seed value for randomness
-    tf.logging.set_verbosity(tf.logging.INFO) # choose what level of logging you want
-    tf.logging.info('Starting importance in %s mode...', (FLAGS.mode))
+    logging.set_verbosity(logging.INFO) # choose what level of logging you want
+    logging.info('Starting importance in %s mode...', (FLAGS.mode))
 
     if not os.path.exists(FLAGS.model_path):
         if FLAGS.mode=="train":
@@ -169,23 +176,23 @@ def main(unused_argv):
 if __name__ == '__main__':
 
     # Where to find data
-    tf.app.flags.DEFINE_string('data_path', '',
+    flags.DEFINE_string('data_path', '',
                                'Path expression to numpy datafiles. Can include wildcards to access multiple datafiles.')
 
     # Important settings
-    tf.app.flags.DEFINE_string('mode', '', 'must be one of train/eval/decode')
+    flags.DEFINE_string('mode', '', 'must be one of train/eval/decode')
 
     # Where to save output
-    tf.app.flags.DEFINE_string('model_path', '/home/logan/data/multidoc_summarization/logs',
+    flags.DEFINE_string('model_path', '/home/logan/data/multidoc_summarization/logs',
                                'Path expression to save model.')
-    tf.app.flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/rouge-l-predictions',
+    flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/rouge-l-predictions',
                                'Path expression to save ROUGE-L scores.')
-    tf.app.flags.DEFINE_integer('training_instances', -1,
+    flags.DEFINE_integer('training_instances', -1,
                                 'Number of instances to load for training. Set to -1 to train on all.')
-    tf.app.flags.DEFINE_integer('feat_dim', 1026, 'Number of features in instances.')
+    flags.DEFINE_integer('feat_dim', 1026, 'Number of features in instances.')
 
     try:
-        tf.app.run()
+        app.run(main)
     except util.InfinityValueError as e:
         sys.exit(100)
     except:

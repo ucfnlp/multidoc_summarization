@@ -26,6 +26,6 @@ MAX_ENC_STEPS=100000
 MIN_DEC_STEPS=100
 MAX_DEC_STEPS=120
 
-CUDA_VISIBLE_DEVICES=1 python run_summarization.py --mode=decode --dataset_name="$DATASET_NAME" --vocab_path="$VOCAB_PATH" --actual_log_root="$LOG_ROOT" --exp_name="$DATASET_NAME""$OPTIONAL_EXP_NAME" --single_pass --coverage --max_enc_steps="$MAX_ENC_STEPS" --min_dec_steps="$MIN_DEC_STEPS" --max_dec_steps="$MAX_DEC_STEPS" "$@" &
+python run_summarization.py --mode=decode --dataset_name="$DATASET_NAME" --vocab_path="$VOCAB_PATH" --actual_log_root="$LOG_ROOT" --exp_name="$DATASET_NAME""$OPTIONAL_EXP_NAME" --single_pass --coverage --max_enc_steps="$MAX_ENC_STEPS" --min_dec_steps="$MIN_DEC_STEPS" --max_dec_steps="$MAX_DEC_STEPS" "$@" &
 
 wait

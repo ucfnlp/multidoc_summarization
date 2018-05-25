@@ -3,7 +3,9 @@ shortens texts
 represents diverse views
 real-life systems
 
-
+framework is flexible. can use whatever importance fn you want
+	Query based summarization
+		if you want a summary about the family of the shooter, then you can get a distribution that gives high score to sentences about family
 
 
 
