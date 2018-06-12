@@ -25,8 +25,8 @@ max_enc_steps = 100000
 min_dec_steps = 100
 max_dec_steps = 120
 
-rouge_logan_dec_dir = '/home/logan/data/multidoc_summarization/logs/scratch/decode_test_100000maxenc_4beam_70mindec_100maxdec_ckpt-238410/decoded'
-rouge_orig_dec_dir = '/home/logan/data/multidoc_summarization/logs/tac_2011/decode_test_10000maxenc_4beam_35mindec_100maxdec_ckpt-238410/decoded'
+rouge_logan_dec_dir = 'duc_2004_reservoir_lambda_0.6_mute_7_tfidf'
+rouge_orig_dec_dir = 'duc_2004_reservoir_lambda_0.6_mute_2_oracle'
 
 flags.DEFINE_string('candidate_exp_name', rouge_logan_dec_dir, 'Path to system-generated summaries that we want to evaluate.')
 flags.DEFINE_string('original_exp_name', rouge_orig_dec_dir, 'Path to system-generated summaries by a system we are comparing to.')

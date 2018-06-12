@@ -304,14 +304,17 @@ def l1_normalize(importances):
 def softmax_trick(distribution, tau):
     return softmax(distribution / tau)
 
-
 def save_importances_and_coverages(logan_importances, importances_hat, enc_sentences, enc_sent_embs, enc_words_embs_list,
-                                   enc_tokens, hyp, sess, batch, vocab, tokenizer, ex_index):
+                                   enc_tokens, hyp, sess, batch, vocab, tokenizer, ex_index, sort=True):
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
     summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
     summ_embeddings, summ_words_embs_list, summ_words_list = get_sentences_embeddings(summ_sents, summ_tokens,
                                                                                       sess, batch, vocab)
     prev_beta = logan_importances
+
+    if sort:
+        sort_order = np.argsort(logan_importances, 0)[::-1]
+        enc_sentences_str = util.reorder(enc_sentences_str, sort_order)
 
     for sent_idx in range(0, len(summ_sents)):
         cur_summ_sents = summ_sents[:sent_idx]
@@ -347,6 +350,8 @@ def save_importances_and_coverages(logan_importances, importances_hat, enc_sente
                          ('importance', logan_importances),
                          ('beta', beta_for_sentences)]
         for distr_str, distribution in distributions:
+            if sort:
+                distribution = distribution[sort_order]
             save_name = os.path.join("%06d_decoded_%s_%d_sent" % (ex_index, distr_str, sent_idx))
             plot_importances(enc_sentences_str, distribution, summ_str, save_location=distr_dir, save_name=save_name)
 

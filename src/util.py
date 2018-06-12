@@ -95,6 +95,9 @@ def to_unicode(text):
         return text
     return text
 
+def reorder(l, ordering):
+    return [l[i] for i in ordering]
+
 def my_lcs(string, sub):
     """
     Calculates longest common subsequence for a pair of tokenized strings
