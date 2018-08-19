@@ -1,8 +1,0 @@
-tensorflow-gpu
-numpy
-tqdm
-matplotlib
-Pillow
-nltk
-scikit-learn
-
