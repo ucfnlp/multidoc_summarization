@@ -78,7 +78,7 @@ base on clauses not sentences
 
 train CNNDM from scratch		
 ----------------------------------------
-CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --max_enc_steps=100 --max_dec_steps=60 --num_iterations=60000
+CUDA_VISIBLE_DEVICES=0 python run_summarization.py --mode=train --data_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_* --vocab_path=/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab --log_root=/home/logan/data/multidoc_summarization/logs --exp_name=scratch --use_pretrained=False --max_enc_steps=100 --max_dec_steps=60 --num_iterations=60000
 
 6 hours?
 started apr 10 5pm
