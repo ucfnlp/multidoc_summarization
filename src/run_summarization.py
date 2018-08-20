@@ -22,13 +22,7 @@ if not "DISPLAY" in os.environ:
     matplotlib.use("Agg")
 import sys
 import time
-import gpu_util
-best_gpu = str(gpu_util.pick_gpu_lowest_memory())
-if best_gpu != 'None':
-    # os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_util.pick_gpu_lowest_memory())
-    calc_features_batch_size = 100
-else:
-    calc_features_batch_size = 10
+
 import tensorflow as tf
 import numpy as np
 from collections import namedtuple
@@ -39,7 +33,6 @@ from decode import BeamSearchDecoder
 import util
 from tensorflow.python import debug as tf_debug
 from tqdm import tqdm
-from tqdm import trange
 import write_data
 import importance_features
 import run_importance
@@ -55,18 +48,6 @@ import random
 random.seed(222)
 FLAGS = flags.FLAGS
 
-# # Where to find data
-# flags.DEFINE_string('data_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/chunked/train_*', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
-# flags.DEFINE_string('vocab_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/finished_files/vocab', 'Path expression to text vocabulary file.')
-# 
-# # Important settings
-# flags.DEFINE_string('mode', 'train', 'must be one of train/eval/decode')
-# flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
-# 
-# # Where to save output
-# flags.DEFINE_string('log_root', '/home/logan/data/multidoc_summarization/logs', 'Root directory for all logging.')
-# flags.DEFINE_string('exp_name', 'myexperiment', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
-
 # Where to find data
 flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
 flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
@@ -76,8 +57,8 @@ flags.DEFINE_string('mode', '', 'must be one of train/eval/decode/calc_features'
 flags.DEFINE_boolean('single_pass', False, 'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, i.e. take the current checkpoint, and use it to produce one summary for each example in the dataset, write the summaries to file and then get ROUGE scores for the whole dataset. If False (default), run concurrent decoding, i.e. repeatedly load latest checkpoint, use it to produce summaries for randomly-chosen examples and log the results to screen, indefinitely.')
 
 # Where to save output
-flags.DEFINE_string('actual_log_root', '', 'Root directory for all logging.')
 flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
+flags.DEFINE_string('actual_log_root', '', 'Dont use this setting, only for internal use. Root directory for all logging.')
 flags.DEFINE_string('exp_name', '', 'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
 # Hyperparameters
@@ -109,59 +90,33 @@ flags.DEFINE_boolean('restore_best_model', False, 'Restore the best model in the
 # Debugging. See https://www.tensorflow.org/programmers_guide/debugger
 flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
 
-# Pointer-generator or sentence coverage model
-flags.DEFINE_boolean('logan_coverage', False, 'If True, use logan\'s coverage to weight sentences.')
-
 # Pointer-generator or sentence importance model
-flags.DEFINE_boolean('logan_importance', False, 'If True, use logan\'s importance to weight sentences.')
-flags.DEFINE_boolean('logan_beta', False, 'Set to true if using logan_coverage or logan_importance.')
-flags.DEFINE_float('logan_coverage_tau', 1.0, 'Tau factor to skew the coverage distribution. Set to 1.0 to turn off.')
-flags.DEFINE_float('logan_importance_tau', 1.0, 'Tau factor to skew the importance distribution. Set to 1.0 to turn off.')
-flags.DEFINE_float('logan_beta_tau', 1.0, 'Tau factor to skew the combined beta distribution. Set to 1.0 to turn off.')
 flags.DEFINE_integer('chunk_size', -1, 'How large the sentence chunks should be. Set to -1 to turn off.')
 flags.DEFINE_integer('num_iterations', 60000, 'How many iterations to run. Set to -1 to run indefinitely.')
 flags.DEFINE_boolean('coverage_optimization', True, 'If true, only recalculates coverage when necessary.')
-flags.DEFINE_boolean('logan_reservoir', False, 'If true, use the paradigm of importance being a reservoir that keeps\
+flags.DEFINE_boolean('pg_mmr', False, 'If true, use the paradigm of importance being a reservoir that keeps\
                             being reduced by the similarity to the summary sentences.')
-flags.DEFINE_integer('mute_k', -1, 'Pick top k sentences to select and mute all others. Set to -1 to turn off.')
-flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of each distribution.')
+flags.DEFINE_float('lambda_val', 0.6, 'Lambda factor to reduce similarity amount to subtract from importance. Set to 0.5 to make importance and similarity have equal weight.')
+flags.DEFINE_integer('mute_k', 7, 'Pick top k sentences to select and mute all others. Set to -1 to turn off.')
+flags.DEFINE_boolean('save_distributions', False, 'If true, save plots of each distribution -- importance, similarity, mmr.')
 flags.DEFINE_string('similarity_fn', 'rouge_l', 'Which similarity function to use when calculating\
-                            sentence similarity or coverage. Must be one of {rouge_l, tokenwise_sentence_similarity\
-                            , ngram_similarity, cosine_similarity')
-flags.DEFINE_boolean('always_squash', False, 'Only used if using logan_reservoir. If true, then squash every time beta is recalculated.')
-flags.DEFINE_boolean('retain_beta_values', False, 'Only used if using mute mode. If true, then the beta being\
+                            sentence similarity or coverage. Must be one of {rouge_l, ngram_similarity}')
+flags.DEFINE_boolean('retain_mmr_values', False, 'Only used if using mute mode. If true, then the mmr being\
                                                          multiplied by alpha will not be a 0/1 mask, but instead keeps their values.')
-flags.DEFINE_boolean('dont_renormalize', False, 'Dont renormalize the alpha values after multiplying by beta')
 flags.DEFINE_string('save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/svr', 'Path expression to save importances features.')
-flags.DEFINE_integer('svr_num_documents', 10000, 'How many iterations to run. Set to -1 to run indefinitely.')
-flags.DEFINE_boolean('no_balancing', True, 'Only if in calc_features mode. If False, then perform balancing based \
-                                                   on how many sentences have R-L greater than 0.5.')
+flags.DEFINE_integer('svr_num_documents', 1000, 'How many iterations to run. Set to -1 to run indefinitely.')
 flags.DEFINE_string('importance_model_name', 'svr', 'Name of importance prediction model, which is used to find the model file.')
-flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, lex_rank, tfidf, oracle}.')
-flags.DEFINE_boolean('use_cluster_dist', False, 'Only if in calc_features mode. If True, then use the cluster distance as the cluster representation')
-flags.DEFINE_string('sent_vec_feature_method', 'separate', 'Which method to use for calculating the sentence vector feature. Must be one of {fw_bw, average, separate}')
-flags.DEFINE_boolean('normalize_features', False, 'If True, then normalize the simple features (sent_len, sent_position) to be between [0,1].')
-flags.DEFINE_boolean('lexrank_as_feature', False, 'If True, then include lexrank as a feature when predicting importance using SVR.')
-flags.DEFINE_boolean('subtract_from_original_importance', True, 'If True, then dont keep a running importance value. Instead, substract similarity from the original importance for each sentence.')
-flags.DEFINE_boolean('rouge_l_prec_rec', True, 'If True, then dont use F-score. Instead, use precision for calculating similarity, and recall for calculating groundtruth importance.')
-flags.DEFINE_boolean('train_on_val', True, 'If True, then train SVR on validation set.')
-flags.DEFINE_boolean('both_cnn_dm', False, 'If True, then train SVR on both CNN and DailyMail, rather than just CNN.')
+flags.DEFINE_string('importance_fn', 'svr', 'Which model to use for calculating importance. Must be one of {svr, tfidf, oracle}.')
 flags.DEFINE_string('dataset_name', 'tac_2011', 'Which dataset to use. Makes a log dir based on name.\
                                                 Must be one of {tac_2011, tac_2008, duc_2004, duc_tac, cnn_dm}')
 flags.DEFINE_string('dataset_split', 'test', 'Which dataset split to use. Must be one of {train, val, test}')
 flags.DEFINE_string('data_root', '/home/logan/data/multidoc_summarization/tf_examples', 'Path to root directory for all datasets.')
-flags.DEFINE_float('lambda_val', 0.5, 'Lambda factor to reduce similarity amount to subtract from importance. Set to 0.5 to make importance and similarity have equal weight.')
-flags.DEFINE_string('svm_model_name', 'svm_10000', 'Name of importance prediction model, which is used to find the model file.')
-flags.DEFINE_string('svm_save_path', '/home/logan/data/multidoc_summarization/cnn-dailymail/svm_data_10000', 'Path expression to save importances features.')
-flags.DEFINE_boolean('svm_no_balancing', False, 'Only if in calc_features mode. If False, then perform balancing based \
-                                                   on how many sentences have R-L greater than 0.5.')
-flags.DEFINE_boolean('randomize_sent_order', False, 'If True, then randomize the sentence order when loading the TF examples.')
-flags.DEFINE_string('query', 'family', 'If True, then randomize the sentence order when loading the TF examples.')
 
 
 # If use a pretrained model
 flags.DEFINE_boolean('use_pretrained', True, 'If True, use pretrained model in the path FLAGS.pretrained_path.')
 flags.DEFINE_string('pretrained_path', '/home/logan/data/multidoc_summarization/logs/pretrained_model/train', 'Root directory for all logging.')
+
 
 # Pointer-generator or baseline model
 flags.DEFINE_boolean('upitt', False, 'Set to true if working on UPitt data.')
@@ -384,11 +339,6 @@ def main(unused_argv):
     start_time = time.time()
     if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
         raise Exception("Problem with flags: %s" % unused_argv)
-    if FLAGS.logan_coverage and FLAGS.logan_reservoir:
-        raise Exception("Logan's coverage and reservoir options cannot be used simultaneously. Please pick one or neither.")
-    if FLAGS.logan_reservoir:
-        FLAGS.logan_importance = True
-        FLAGS.logan_beta = True
     if FLAGS.dataset_name != "":
         FLAGS.data_path = os.path.join(FLAGS.data_root, FLAGS.dataset_name, FLAGS.dataset_split + '*')
     if not os.path.exists(os.path.join(FLAGS.data_root, FLAGS.dataset_name)) or len(os.listdir(os.path.join(FLAGS.data_root, FLAGS.dataset_name))) == 0:
@@ -399,7 +349,8 @@ def main(unused_argv):
     logging.info('Starting seq2seq_attention in %s mode...', (FLAGS.mode))
 
     # Change log_root to FLAGS.log_root/FLAGS.exp_name and create the dir if necessary
-    FLAGS.log_root = os.path.join(FLAGS.actual_log_root, FLAGS.exp_name)
+    FLAGS.actual_log_root = FLAGS.log_root
+    FLAGS.log_root = os.path.join(FLAGS.log_root, FLAGS.exp_name)
     if not os.path.exists(FLAGS.log_root):
         if FLAGS.mode=="train":
             os.makedirs(FLAGS.log_root)
@@ -424,14 +375,14 @@ def main(unused_argv):
     # Make a namedtuple hps, containing the values of the hyperparameters that the model needs
     hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std',
                    'max_grad_norm', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps',
-                   'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen', 'randomize_sent_order']
+                   'max_enc_steps', 'coverage', 'cov_loss_wt', 'pointer_gen']
     hps_dict = {}
     for key,val in FLAGS.__flags.iteritems(): # for each flag
         if key in hparam_list: # if it's in the list
             hps_dict[key] = val.value # add it to the dict
     hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
 
-    if FLAGS.logan_reservoir:
+    if FLAGS.pg_mmr:
 
         if FLAGS.importance_fn == 'tfidf':
             tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
@@ -465,30 +416,20 @@ def main(unused_argv):
                     dill.dump(tfidf_vectorizer, f)
 
 
-        if FLAGS.importance_fn == 'svr' or FLAGS.importance_fn == 'svm':
+        if FLAGS.importance_fn == 'svr':
             if FLAGS.importance_fn == 'svr':
                 save_path = FLAGS.save_path
                 importance_model_name = FLAGS.importance_model_name
-            else:
-                save_path = FLAGS.svm_save_path
-                importance_model_name = FLAGS.svm_model_name
-            if FLAGS.both_cnn_dm:
-                save_path = save_path + '_both'
-                importance_model_name = importance_model_name + '_both'
-            else:
-                save_path = save_path + '_' + str(FLAGS.svr_num_documents)
-                importance_model_name = importance_model_name + '_' + str(FLAGS.svr_num_documents)
+            save_path = save_path + '_both'
+            importance_model_name = importance_model_name + '_both'
 
-            dataset_split = 'val' if FLAGS.train_on_val else 'train'
+            dataset_split = 'val'
             if not os.path.exists(save_path) or len(os.listdir(save_path)) == 0:
                 print('No importance_feature instances found at %s so creating it from raw data.' % save_path)
                 decode_model_hps = hps._replace(
-                    max_dec_steps=1, batch_size=calc_features_batch_size, mode='calc_features')  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
-                if FLAGS.both_cnn_dm:
-                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_500_dm_500', dataset_split + '*')
-                else:
-                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_dm', dataset_split + '*')
-                batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass, cnn_500_dm_500=FLAGS.both_cnn_dm)
+                    max_dec_steps=1, batch_size=100, mode='calc_features')  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
+                cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_500_dm_500', dataset_split + '*')
+                batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass, cnn_500_dm_500=True)
                 calc_features(cnn_dm_train_data_path, decode_model_hps, vocab, batcher, save_path)
             importance_model_path = os.path.join(FLAGS.actual_log_root, importance_model_name + '.pickle')
             if not os.path.exists(importance_model_path):
@@ -521,42 +462,7 @@ def main(unused_argv):
         decode_model_hps = hps._replace(max_dec_steps=1) # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
         model = SummarizationModel(decode_model_hps, vocab)
         decoder = BeamSearchDecoder(model, batcher, vocab)
-
-
-
-
-        # import struct
-        # from tensorflow.core.example import example_pb2
-        # from gensim.models import KeyedVectors
-        #
-        # embedding_file = '/home/logan/data/multidoc_summarization/GoogleNews-vectors-negative300.bin'
-        # input_file = '/home/logan/data/multidoc_summarization/TAC_Data/logans_test/test_001.bin'
-        #
-        # # Load pretrained model (since intermediate data is not included, the model cannot be refined with additional data)
-        # model = KeyedVectors.load_word2vec_format(embedding_file, binary=True)
-        #
-        # dog = model['dog']
-        # print(dog.shape)
-        # print(dog[:10])
-        #
-        # reader = open(input_file, 'rb')
-        # while True:
-        #     len_bytes = reader.read(8)
-        #     if not len_bytes: break  # finished reading this file
-        #     str_len = struct.unpack('q', len_bytes)[0]
-        #     example_str = struct.unpack('%ds' % str_len, reader.read(str_len))[0]
-        #     example = example_pb2.Example.FromString(example_str)
-
-
-
-
-
-
-
         decoder.decode() # decode indefinitely (unless single_pass=True, in which case deocde the dataset exactly once)
-    elif hps.mode == 'calc_features':
-        decode_model_hps = hps._replace(
-            max_dec_steps=1, batch_size=calc_features_batch_size)
         calc_features(FLAGS.save_path, decode_model_hps, vocab, batcher)
 
     else:

@@ -68,8 +68,6 @@ class Example(object):
         if hps.pointer_gen:
 
             if raw_article_sents is not None and len(raw_article_sents) > 0:
-                if hps.randomize_sent_order:
-                    random.shuffle(raw_article_sents)
                 self.tokenized_sents = [process_sent(sent) for sent in raw_article_sents]
                 self.word_ids_sents, self.article_oovs = data.tokenizedarticle2ids(self.tokenized_sents, vocab)
                 self.enc_input_extend_vocab = util.flatten_list_of_lists(self.word_ids_sents)

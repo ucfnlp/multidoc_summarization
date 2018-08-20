@@ -98,6 +98,15 @@ def to_unicode(text):
 def reorder(l, ordering):
     return [l[i] for i in ordering]
 
+def special_squash(distribution):
+    res = distribution - np.min(distribution)
+    if np.max(res) == 0:
+        print('All elements in distribution are 0, so setting all to 0')
+        res.fill(0)
+    else:
+        res = res / np.max(res)
+    return res
+
 def my_lcs(string, sub):
     """
     Calculates longest common subsequence for a pair of tokenized strings
@@ -174,42 +183,21 @@ class Similarity_Functions:
     
     '''
     @classmethod
-    def get_similarity(cls, enc_sent_embs, enc_words_embs_list, enc_tokens, summ_embeddings, summ_words_embs_list,
-                       summ_tokens, similarity_fn, vocab):
-        if similarity_fn == 'cosine_similarity':
-            similarity_matrix = cosine_similarity(enc_sent_embs, summ_embeddings)
-            # Calculate amount of uncovered information for each sentence in the source
-            importances_hat = np.sum(similarity_matrix, 1)
-        elif similarity_fn == 'tokenwise_sentence_similarity':
-            similarity_matrix = cls.tokenwise_sentence_similarity(enc_words_embs_list, summ_words_embs_list)
-            # Calculate amount of uncovered information for each sentence in the source
-            importances_hat = np.sum(similarity_matrix, 1)
-        elif similarity_fn == 'ngram_similarity':
+    def get_similarity(cls, enc_tokens, summ_tokens, similarity_fn, vocab):
+        if similarity_fn == 'ngram_similarity':
             importances_hat = cls.ngram_similarity(enc_tokens, summ_tokens)
         elif similarity_fn == 'rouge_l':
-            metric = 'precision' if FLAGS.rouge_l_prec_rec else 'f1'
-            # similarity_matrix = cls.rouge_l_similarity(enc_tokens, summ_tokens, metric=metric)
-            # importances_hat = np.sum(similarity_matrix, 1)
-
-            # importances_hat = cls.rouge_l_similarity(enc_tokens, summ_tokens, metric=metric)
+            metric = 'precision'
             summ_tokens_combined = flatten_list_of_lists(summ_tokens)
             importances_hat = cls.rouge_l_similarity(enc_tokens, summ_tokens_combined, vocab, metric=metric)
         return importances_hat
 
     @classmethod
     def rouge_l_similarity(cls, article_sents, abstract_sents, vocab, metric='f1'):
-        # sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
         sentence_similarity = np.zeros([len(article_sents)], dtype=float)
         abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
         for article_sent_idx, article_sent in enumerate(article_sents):
             rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
-            # if eval_sents_indiv:
-            #     abs_similarities = []
-            #     for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
-            #         rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
-            #         abs_similarities.append(rouge_l)
-            #         sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
-            # else:
             sentence_similarity[article_sent_idx] = rouge_l
         return sentence_similarity
 

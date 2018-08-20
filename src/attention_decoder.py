@@ -28,7 +28,7 @@ FLAGS = flags.FLAGS
 # Note: this function is based on tf.contrib.legacy_seq2seq_attention_decoder, which is now outdated.
 # In the future, it would make more sense to write variants on the attention mechanism using the new seq2seq library for tensorflow 1.0: https://www.tensorflow.org/api_guides/python/contrib.seq2seq#Attention
 def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding_mask, cell, initial_state_attention=False,
-                      pointer_gen=True, use_coverage=False, prev_coverage=None, logan_beta=None):
+                      pointer_gen=True, use_coverage=False, prev_coverage=None, mmr_score=None):
     """
     Args:
         decoder_inputs: A list of 2D Tensors [batch_size x input_size].
@@ -104,10 +104,9 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
                     masked_sums = tf.reduce_sum(attn_dist, axis=1) # shape (batch_size)
                     return attn_dist / tf.reshape(masked_sums, [-1, 1]) # re-normalize
 
-                def apply_logan_beta(pre_attn_dist, logan_beta):
-                    post_attn_dist = pre_attn_dist * logan_beta
-                    if not FLAGS.dont_renormalize:
-                        post_attn_dist = post_attn_dist / tf.expand_dims(tf.reduce_sum(post_attn_dist, axis=1), axis=1)
+                def apply_mmr_score(pre_attn_dist, mmr_score):
+                    post_attn_dist = pre_attn_dist * mmr_score
+                    post_attn_dist = post_attn_dist / tf.expand_dims(tf.reduce_sum(post_attn_dist, axis=1), axis=1)
                     return post_attn_dist
 
                 if use_coverage and coverage is not None: # non-first step of coverage
@@ -120,9 +119,9 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
                     # Calculate attention distribution
                     pre_attn_dist = masked_attention(e)
 
-                    # Added by Logan: apply logan_beta to change distribution to reflect what has been covered alread
-                    if logan_beta is not None:
-                        attn_dist = apply_logan_beta(pre_attn_dist, logan_beta)
+                    # Added for PG-MMR: apply mmr_score to change distribution to reflect what has been covered alread
+                    if mmr_score is not None:
+                        attn_dist = apply_mmr_score(pre_attn_dist, mmr_score)
                     else:
                         attn_dist = pre_attn_dist
 

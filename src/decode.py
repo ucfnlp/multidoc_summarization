@@ -42,7 +42,6 @@ FLAGS = flags.FLAGS
 SECS_UNTIL_NEW_CKPT = 60	# max number of seconds before loading new checkpoint
 threshold = 0.5
 prob_to_keep = 0.33
-svm_prob_to_keep = 0.1
 
 
 class BeamSearchDecoder(object):
@@ -115,15 +114,8 @@ class BeamSearchDecoder(object):
             article_withunks = data.show_art_oovs(original_article, self._vocab) # string
             abstract_withunks = data.show_abs_oovs(original_abstract, self._vocab, (batch.art_oovs[0] if FLAGS.pointer_gen else None)) # string
 
-            # Only for UPitt
-            specific_max_dec_steps = None
-            doc_name = None
-            if FLAGS.upitt:
-                specific_max_dec_steps = int(original_abstract)
-                doc_name = all_original_abstract_sents[1][0]
-
             # Run beam search to get best Hypothesis
-            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, counter, self._batcher._hps, specific_max_dec_steps=specific_max_dec_steps)
+            best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch, counter, self._batcher._hps)
 
             # Extract the output ids from the hypothesis and convert back to words
             output_ids = [int(t) for t in best_hyp.tokens[1:]]
@@ -242,45 +234,22 @@ class BeamSearchDecoder(object):
         num_documents_desired = docs_desired
         pbar = tqdm(initial=0, total=num_documents_desired)
 
-        t0 = time.time()
         instances = []
         sentences = []
         counter = 0
         doc_counter = 0
         file_counter = 0
         while True:
-            # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-            # print("Results_dict: ", results_dict)
-            # print "Batcher num batches", self._batcher._batch_queue.qsize()
             batch = self._batcher.next_batch()	# 1 example repeated across batch
-            # if counter != 21:
-            #     counter += 1
-            #     continue
             if doc_counter >= num_documents_desired:
-                # instances = np.stack(instances)
-                # instances = instances[:10000]
-                # save_path = os.path.join(FLAGS.save_path, data_split + '_%06d'%file_counter)
-                # np.savez_compressed(os.path.join(save_path), instances)
                 save_path = os.path.join(model_save_path, data_split + '_%06d'%file_counter)
                 with open(save_path, 'wb') as f:
                     cPickle.dump(instances, f)
                 print('Saved features at %s' % save_path)
                 return
-                # instances = []
-                # counter = 0
-                # file_counter += 1
 
             if batch is None: # finished decoding dataset in single_pass mode
                 raise Exception('We havent reached the num docs desired (%d), instead we reached (%d)' % (num_documents_desired, doc_counter))
-                # assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
-                # logging.info("Decoder has finished reading dataset for single_pass.")
-                # pbar.close()
-                # if len(instances) > 0:
-                #     instances = np.stack(instances)
-                #     save_path = os.path.join(model_save_path, data_split + '_%06d'%file_counter)
-                #     np.savez_compressed(os.path.join(save_path), instances)
-                #     tqdm.write('Saved features at %s' % save_path)
-                # return
 
 
             batch_enc_states, _ = self._model.run_encoder(self._sess, batch)
@@ -303,7 +272,7 @@ class BeamSearchDecoder(object):
 
                 sent_indices = enc_sent_indices
                 sent_reps = importance_features.get_importance_features_for_article(
-                    enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate, use_cluster_dist=FLAGS.use_cluster_dist)
+                    enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate)
                 y, y_hat = importance_features.get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
                 binary_y = importance_features.get_best_ROUGE_L_for_each_abs_sent(art_oovs, all_original_abstracts_sents, self._vocab, enc_tokens)
                 for rep_idx, rep in enumerate(sent_reps):
@@ -311,23 +280,10 @@ class BeamSearchDecoder(object):
                     rep.binary_y = binary_y[rep_idx]
 
                 for rep_idx, rep in enumerate(sent_reps):
-                    # if FLAGS.use_cluster_dist:
-                    #     cluster_rep_i = [cluster_rep[i]]
-                    # else:
-                    #     cluster_rep_i = cluster_rep
                     # Keep all sentences with importance above threshold. All others will be kept with a probability of prob_to_keep
                     if FLAGS.importance_fn == 'svr':
-                        if FLAGS.no_balancing or rep.y >= threshold or np.random.random() <= prob_to_keep:
-                            # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
-                            #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
-                            instances.append(rep)
-                            sentences.append(sentences)
-                    elif FLAGS.importance_fn == 'svm':
-                        if FLAGS.svm_no_balancing or rep.binary_y >= threshold or np.random.random() <= svm_prob_to_keep:
-                            # inst = np.concatenate([[abs_sent_indices[i]], [rel_sent_indices[i]], [sent_lens[i]],
-                            #                        [lexrank_score[i]], sent_reps[i], cluster_rep_i, [y[i]]])
-                            instances.append(rep)
-                            sentences.append(sentences)
+                        instances.append(rep)
+                        sentences.append(sentences)
                 # for inst in x_y
                 # self.write_for_rouge
                 # print 'Example %d features processed' % counter

@@ -55,8 +55,8 @@ class SummarizationModel(object):
             self.prev_coverage = tf.placeholder(tf.float32, [hps.batch_size, None], name='prev_coverage')
             self.token_inputs = tf.placeholder(tf.int32, [hps.batch_size, None], name='token_inputs')
 
-        if FLAGS.logan_beta:
-            self.logan_beta = tf.placeholder(tf.float32, [hps.batch_size, None], name='logan_beta')
+        if FLAGS.pg_mmr:
+            self.mmr_score = tf.placeholder(tf.float32, [hps.batch_size, None], name='mmr_score')
 
 
     def _make_feed_dict(self, batch, just_enc=False):
@@ -144,9 +144,9 @@ class SummarizationModel(object):
         cell = tf.contrib.rnn.LSTMCell(hps.hidden_dim, state_is_tuple=True, initializer=self.rand_unif_init)
 
         prev_coverage = self.prev_coverage if hps.mode=="decode" and hps.coverage else None # In decode mode, we run attention_decoder one step at a time and so need to pass in the previous step's coverage vector each time
-        logan_beta =  self.logan_beta if hps.mode=="decode" and FLAGS.logan_beta else None
+        mmr_score =  self.mmr_score if hps.mode=="decode" and FLAGS.pg_mmr else None
 
-        outputs, out_state, attn_dists, p_gens, coverage, pre_attn_dists = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage, logan_beta=logan_beta)
+        outputs, out_state, attn_dists, p_gens, coverage, pre_attn_dists = attention_decoder(inputs, self._dec_in_state, self._enc_states, self._enc_padding_mask, cell, initial_state_attention=(hps.mode=="decode"), pointer_gen=hps.pointer_gen, use_coverage=hps.coverage, prev_coverage=prev_coverage, mmr_score=mmr_score)
 
         return outputs, out_state, attn_dists, p_gens, coverage, pre_attn_dists
 
@@ -380,7 +380,7 @@ class SummarizationModel(object):
         embs = sess.run(to_return, feed_dict=feed_dict)
         return embs
 
-    def decode_onestep(self, sess, batch, latest_tokens, enc_states, dec_init_states, prev_coverage, beta):
+    def decode_onestep(self, sess, batch, latest_tokens, enc_states, dec_init_states, prev_coverage, mmr_score):
         """For beam search decoding. Run the decoder for one step.
 
         Args:
@@ -434,8 +434,8 @@ class SummarizationModel(object):
             feed[self.prev_coverage] = np.stack(prev_coverage, axis=0)
             to_return['coverage'] = self.coverage
 
-        if FLAGS.logan_beta:
-            feed[self.logan_beta] = beta
+        if FLAGS.pg_mmr:
+            feed[self.mmr_score] = mmr_score
             # to_return['p_gens'] = self.p_gens
 
         results = sess.run(to_return, feed_dict=feed) # run the decoder step
