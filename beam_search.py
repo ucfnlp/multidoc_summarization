@@ -31,9 +31,8 @@ import textwrap as tw
 # import cv2
 import PIL
 import itertools
-from sumy.nlp.tokenizers import Tokenizer
 import util
-from util import Similarity_Functions
+from util import get_similarity, rouge_l_similarity
 import importance_features
 import dill
 import time
@@ -63,6 +62,7 @@ class Hypothesis(object):
         self.attn_dists = attn_dists
         self.p_gens = p_gens
         self.coverage = coverage
+        self.similarity = 0.
         self.mmr = mmr
 
     def extend(self, token, log_prob, state, attn_dist, p_gen, coverage, mmr):
@@ -101,90 +101,11 @@ class Hypothesis(object):
         return self.log_prob / len(self.tokens)
 
 
-def softmax(x):
-    """
-    Compute softmax values for each sets of scores in x.
-
-    Rows are scores for each class.
-    Columns are predictions (samples).
-    """
-    scoreMatExp = np.exp(np.asarray(x))
-    return scoreMatExp / np.expand_dims(scoreMatExp.sum(-1), -1)
-
-def plot_importances(article_sents, importances, abstracts_text, save_location=None, save_name=None):
-    if save_location is not None:
-        plt.ioff()
-
-    sents_per_figure = 40
-    num_sents = len(importances)
-    max_importance = np.max(importances)
-    chunked_sents = util.chunks(article_sents, sents_per_figure)
-    chunked_importances = util.chunks(importances, sents_per_figure)
-
-    for chunk_idx in range(len(chunked_sents)):
-        my_article_sents = chunked_sents[chunk_idx]
-        my_importances = chunked_importances[chunk_idx]
-
-        if len(my_article_sents) < sents_per_figure:
-            my_article_sents += [''] * (sents_per_figure-len(my_article_sents))
-            my_importances = np.concatenate([my_importances, np.zeros([sents_per_figure-len(my_importances)])])
-
-        y_pos = np.arange(len(my_article_sents))
-        fig, ax1 = plt.subplots()
-        fig.subplots_adjust(left=0.9, top=1.0, bottom=0.03, right=1.0)
-        ax1.barh(y_pos, my_importances, align='center',
-                 color='green', ecolor='black')
-        ax1.set_yticks(y_pos)
-        ax1.set_yticklabels(my_article_sents)
-        ax1.invert_yaxis()  # labels read top-to-bottom
-        ax1.set_xlabel('Performance')
-        ax1.set_title('How fast do you want to go today?')
-        ax1.set_xlim(right=max_importance)
-
-        # ax1.text(0.5,0.5,wrap(abstract_texts[0], 100))
-        # plt.tight_layout()
-        if save_location is not None:
-            fig.set_size_inches(18.5, 10.5)
-            plt.savefig(os.path.join(save_location, save_name + '_' + str(chunk_idx) + '.jpg'))
-            plt.close(fig)
-        else:
-            figManager = plt.get_current_fig_manager()
-            figManager.window.showMaximized()
-            plt.show()
-
-    # fig, ax1 = plt.subplots()
-    plt.figure()
-    comment2_txt = '''\
-        Notes: Sales for Product A have been flat through the year. We
-        expect improvement after the new release in Q2.
-        '''
-    fig_txt = tw.fill(tw.dedent(abstracts_text), width=80)
-    plt.figtext(0.5, 0.5, fig_txt, horizontalalignment='center',
-                fontsize=9, multialignment='left',
-                bbox=dict(boxstyle="round", facecolor='#D8D8D8',
-                          ec="0.5", pad=0.5, alpha=1), fontweight='bold')
-    # plt.tight_layout()
-    if save_location is not None:
-        fig = plt.gcf()
-        fig.set_size_inches(18.5, 10.5)
-        plt.savefig(os.path.join(save_location, save_name + '_' + str(chunk_idx+1) + '.jpg'))
-        plt.close(fig)
-    else:
-        plt.show()
-
-
-def get_summ_sents_and_tokens(summ_tokens, tokenizer, batch, vocab, chunk_size=-1):
+def get_summ_sents_and_tokens(summ_tokens, batch, vocab):
     summ_str = importance_features.tokens_to_continuous_text(summ_tokens, vocab, batch.art_oovs[0])
-    if chunk_size == -1:
-        sentences = tokenizer.to_sentences(summ_str)
-        if data.PERIOD not in sentences[-1]:
-            sentences = sentences[:len(sentences) - 1]  # Doesn't include the last sentence if incomplete (no period)
-    else:
-        all_tokens = summ_str.strip().split(' ')
-        chunked_tokens = util.chunk_tokens(all_tokens, chunk_size)
-        sentences = [' '.join(chunk) for chunk in chunked_tokens]
-        if len(sentences[-1]) < chunk_size:
-            sentences = sentences[:len(sentences) - 1]
+    sentences = util.tokenizer.to_sentences(summ_str)
+    if data.PERIOD not in sentences[-1]:
+        sentences = sentences[:len(sentences) - 1]  # Doesn't include the last sentence if incomplete (no period)
     sent_words = []
     sent_tokens = []
     token_idx = 0
@@ -196,16 +117,6 @@ def get_summ_sents_and_tokens(summ_tokens, tokenizer, batch, vocab, chunk_size=-
         token_idx += len(words)
     return sent_words, sent_tokens
 
-def get_similarity_for_one_summ_sent(enc_sentences, enc_tokens, summ_tokens, vocab):
-    if len(summ_tokens) == 0:
-        return np.zeros([len(enc_sentences)], dtype=float) / len(enc_sentences)
-    else:
-        # normalization_fn = l1_normalize
-        importances_hat = Similarity_Functions.get_similarity(enc_tokens, summ_tokens[-1:], FLAGS.similarity_fn, vocab)
-        # importances = normalization_fn(importances_hat)
-        importances = importances_hat
-        return importances
-
 def convert_to_word_level(mmr_for_sentences, batch, enc_tokens):
     mmr = np.ones([len(batch.enc_batch[0])], dtype=float) / len(batch.enc_batch[0])
     # Calculate how much for each word in source
@@ -216,28 +127,23 @@ def convert_to_word_level(mmr_for_sentences, batch, enc_tokens):
         word_idx += len(mmr_for_words)
     return mmr
 
-
-def l1_normalize(importances):
-    return importances / np.sum(importances)
-
-def save_importances_and_coverages(importances, importances_hat, enc_sentences,
-                                   enc_tokens, hyp, sess, batch, vocab, tokenizer, ex_index, sort=True):
+def save_importances_and_coverages(importances, enc_sentences,
+                                   enc_tokens, hyp, batch, vocab, ex_index, sort=True):
     enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
-    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
+    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, batch, vocab)
     prev_mmr = importances
 
     if sort:
         sort_order = np.argsort(importances, 0)[::-1]
-        enc_sentences_str = util.reorder(enc_sentences_str, sort_order)
 
     for sent_idx in range(0, len(summ_sents)):
         cur_summ_sents = summ_sents[:sent_idx]
         cur_summ_tokens = summ_tokens[:sent_idx]
         summ_str = ' '.join([' '.join(sent) for sent in cur_summ_sents])
-        similarity_amount = Similarity_Functions.get_similarity(enc_tokens, cur_summ_tokens, FLAGS.similarity_fn, vocab)
+        similarity_amount = get_similarity(enc_tokens, cur_summ_tokens, vocab)
 
         if FLAGS.pg_mmr:
-            mmr_for_sentences = calc_mmr_from_sim_and_imp(similarity_amount, importances, prev_mmr, batch, enc_tokens)
+            mmr_for_sentences = calc_mmr_from_sim_and_imp(similarity_amount, importances)
         else:
             mmr_for_sentences = None  # Don't use mmr if no sentence-level option is used
 
@@ -247,15 +153,13 @@ def save_importances_and_coverages(importances, importances_hat, enc_sentences,
         save_name = os.path.join("%06d_decoded_%s_%d_sent" % (ex_index, '', sent_idx))
         file_path = os.path.join(distr_dir, save_name)
         np.savez(file_path, mmr=mmr_for_sentences, importances=importances, enc_sentences=enc_sentences, summ_str=summ_str)
-        distributions = [('importance_hat', importances_hat),
-                         ('similarity', similarity_amount),
+        distributions = [('similarity', similarity_amount),
                          ('importance', importances),
                          ('mmr', mmr_for_sentences)]
         for distr_str, distribution in distributions:
             if sort:
                 distribution = distribution[sort_order]
             save_name = os.path.join("%06d_decoded_%s_%d_sent" % (ex_index, distr_str, sent_idx))
-            plot_importances(enc_sentences_str, distribution, summ_str, save_location=distr_dir, save_name=save_name)
 
             img_file_names = sorted([file_name for file_name in os.listdir(distr_dir)
                                      if save_name in file_name and 'jpg' in file_name
@@ -273,7 +177,7 @@ def save_importances_and_coverages(importances, importances_hat, enc_sentences,
         prev_mmr = mmr_for_sentences
     return mmr_for_sentences
 
-def calc_mmr_from_sim_and_imp(similarity, importances, prev_mmr, batch, enc_tokens):
+def calc_mmr_from_sim_and_imp(similarity, importances):
     new_mmr =  FLAGS.lambda_val*importances - (1-FLAGS.lambda_val)*similarity
     new_mmr = np.maximum(new_mmr, 0)
     return new_mmr
@@ -306,10 +210,10 @@ def get_tokens_for_human_summaries(batch, vocab):
     all_summ_tokens = get_all_summ_tokens(human_summaries)
     return all_summ_tokens
 
-def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model, tokenizer, sent_representations_separate):
+def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model, sent_representations_separate):
     sent_indices = enc_sent_indices
     sent_reps = importance_features.get_importance_features_for_article(
-        enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate)
+        enc_states, enc_sentences, sent_indices, sent_representations_separate)
     features_list = importance_features.get_features_list(False)
     x = importance_features.features_to_array(sent_reps, features_list)
     if FLAGS.importance_fn == 'svr':
@@ -317,18 +221,6 @@ def get_svr_importances(enc_states, enc_sentences, enc_sent_indices, svr_model, 
     else:
         importances = svr_model.decision_function(x)
     return importances
-
-def save_sorted_sentences(importances, raw_article_sents, ex_index):
-    ranked_sent_indices = np.argsort(importances)[::-1]
-    if len(ranked_sent_indices) != len(raw_article_sents):
-        warnings.warn('len(ranked_sent_indices) (%d) != len(raw_article_sents) (%d)' % ( len(ranked_sent_indices), len(raw_article_sents)))
-    ranked_sents = [raw_article_sents[idx] for idx in ranked_sent_indices]
-    output_str = '\n'.join(ranked_sents)
-    ranked_sent_path = os.path.join(FLAGS.log_root, 'ordered_sentences')
-    if not os.path.exists(ranked_sent_path):
-        os.makedirs(ranked_sent_path)
-    with open(os.path.join(ranked_sent_path, 'test_%03d.txt' % ex_index), 'wb') as f:
-        f.write(output_str)
 
 def get_tfidf_importances(raw_article_sents):
     tfidf_model_path = os.path.join(FLAGS.actual_log_root, 'tfidf_vectorizer', FLAGS.dataset_name + '.dill')
@@ -346,6 +238,31 @@ def get_tfidf_importances(raw_article_sents):
     similarity_matrix = cosine_similarity(sent_reps, cluster_rep)
     return np.squeeze(similarity_matrix)
 
+def get_importances(model, batch, enc_states, vocab, sess, hps):
+    if FLAGS.pg_mmr:
+        enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
+        if FLAGS.importance_fn == 'oracle':
+            human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
+            metric = 'recall'
+            importances_hat = rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
+        elif FLAGS.importance_fn == 'svr':
+            if FLAGS.importance_fn == 'svr':
+                with open(os.path.join(FLAGS.actual_log_root, FLAGS.importance_model_name + '_' + str(FLAGS.svr_num_documents) + '.pickle'), 'rb') as f:
+                    svr_model = cPickle.load(f)
+            enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
+            sent_representations_separate = importance_features.get_separate_enc_states(model, sess, enc_sentences, vocab, hps)
+            importances_hat = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model, sent_representations_separate)
+        elif FLAGS.importance_fn == 'tfidf':
+            importances_hat = get_tfidf_importances(batch.raw_article_sents[0])
+        importances = util.special_squash(importances_hat)
+    else:
+        importances = None
+    return importances
+
+def update_similarity_and_mmr(hyp, importances, batch, enc_tokens, vocab):
+    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, batch, vocab)
+    hyp.similarity = get_similarity(enc_tokens, summ_tokens, vocab)
+    hyp.mmr = calc_mmr_from_sim_and_imp(hyp.similarity, importances)
 
 def run_beam_search(sess, model, vocab, batch, ex_index, hps):
     """Performs beam search decoding on the given example.
@@ -366,38 +283,10 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps):
     # dec_in_state is a LSTMStateTuple
     # enc_states has shape [batch_size, <=max_enc_steps, 2*hidden_dim].
 
-
-    if FLAGS.pg_mmr:
-
-        if FLAGS.importance_fn == 'svr':
-            with open(os.path.join(FLAGS.actual_log_root, FLAGS.importance_model_name + '_' + str(FLAGS.svr_num_documents) + '.pickle'), 'rb') as f:
-                svr_model = cPickle.load(f)
-        tokenizer = Tokenizer('english')
-
-        enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
-        enc_sent_indices = importance_features.get_sent_indices(enc_sentences, batch.doc_indices[0])
-        sent_representations_separate = importance_features.get_separate_enc_states(model, sess, enc_sentences, vocab, hps)
-
-
-        if FLAGS.importance_fn == 'oracle':
-            human_tokens = get_tokens_for_human_summaries(batch, vocab)     # list (of 4 human summaries) of list of token ids
-            metric = 'recall'
-            importances_hat = Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
-        elif FLAGS.importance_fn == 'svr':
-            importances_hat = get_svr_importances(enc_states[0], enc_sentences, enc_sent_indices, svr_model, tokenizer, sent_representations_separate)
-        elif FLAGS.importance_fn == 'tfidf':
-            importances_hat = get_tfidf_importances(batch.raw_article_sents[0])
-        importances = util.special_squash(importances_hat)
-
-        save_sorted_sentences(importances, batch.raw_article_sents[0], ex_index)
-    else:
-        importances = None
-
-    if FLAGS.pg_mmr:
-        similarity = np.zeros([FLAGS.beam_size, len(enc_sentences)], dtype=float)
-        mmr_init = importances
-    else:
-        mmr_init = importances
+    # Sentence importance
+    enc_sentences, enc_tokens = batch.tokenized_sents[0], batch.word_ids_sents[0]
+    importances = get_importances(model, batch, enc_states, vocab, sess, hps)
+    mmr_init = importances
 
 
     # Initialize beam_size-many hyptheses
@@ -419,14 +308,10 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps):
         latest_tokens = [t if t in xrange(vocab.size()) else vocab.word2id(data.UNKNOWN_TOKEN) for t in
                          latest_tokens]  # change any in-article temporary OOV ids to [UNK] id, so that we can lookup word embeddings
 
-
-
-
-
-
-
         states = [h.state for h in hyps]  # list of current decoder states of the hypotheses
         prev_coverage = [h.coverage for h in hyps]  # list of coverage vectors (or None)
+
+        # Mute all source sentences except the top k sentences
         prev_mmr = [h.mmr for h in hyps]
         if FLAGS.pg_mmr:
             if FLAGS.mute_k != -1:
@@ -477,22 +362,16 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps):
                 # Once we've collected beam_size-many hypotheses for the next step, or beam_size-many complete hypotheses, stop.
                 break
 
+        # Update the MMR scores when a sentence is completed
         if FLAGS.pg_mmr:
             for hyp_idx, hyp in enumerate(hyps):
-                if (hyp.latest_token == vocab.word2id(data.PERIOD) and FLAGS.chunk_size == -1) or (    # if in regular mode, and the hyp ends in a period
-                    FLAGS.chunk_size > -1 and len(hyp.tokens) % FLAGS.chunk_size == 0   # if in chunk mode, and hyp just finished a chunk
-                ) or (not FLAGS.coverage_optimization):
-                    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
-                    similarity_amount = Similarity_Functions.get_similarity(enc_tokens, summ_tokens, FLAGS.similarity_fn, vocab)
-                    similarity[hyp_idx] = similarity_amount
-                    a = 0
-                    hyp.mmr = calc_mmr_from_sim_and_imp(similarity[hyp_idx], importances, hyp.mmr, batch, enc_tokens)
+                if hyp.latest_token == vocab.word2id(data.PERIOD):     # if in regular mode, and the hyp ends in a period
+                    update_similarity_and_mmr(hyp, importances, batch, enc_tokens, vocab)
         steps += 1
 
     # At this point, either we've got beam_size results, or we've reached maximum decoder steps
 
-    if len(
-            results) == 0:  # if we don't have any complete results, add all current hypotheses (incomplete summaries) to results
+    if len(results) == 0:  # if we don't have any complete results, add all current hypotheses (incomplete summaries) to results
         results = hyps
 
     # Sort hypotheses by average log probability
@@ -500,8 +379,8 @@ def run_beam_search(sess, model, vocab, batch, ex_index, hps):
     best_hyp = hyps_sorted[0]
 
     if FLAGS.save_distributions and FLAGS.pg_mmr:
-        save_importances_and_coverages(importances, importances_hat, enc_sentences,
-                                   enc_tokens, best_hyp, sess, batch, vocab, tokenizer, ex_index)
+        save_importances_and_coverages(importances, enc_sentences,
+                                   enc_tokens, best_hyp, batch, vocab, ex_index)
 
 
     # Return the hypothesis with highest average log prob

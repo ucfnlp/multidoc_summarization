@@ -20,13 +20,13 @@ import tensorflow as tf
 import time
 import os
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from absl import flags
 FLAGS = flags.FLAGS
 import itertools
 from matplotlib import pyplot as plt
 import data
 from absl import logging
+from sumy.nlp.tokenizers import Tokenizer
 
 def get_config():
     """Returns config for tf.session"""
@@ -39,10 +39,7 @@ def load_ckpt(saver, sess, ckpt_dir="train"):
     while True:
         try:
             latest_filename = "checkpoint_best" if ckpt_dir=="eval" else None
-            if FLAGS.use_pretrained:
-                ckpt_dir = FLAGS.pretrained_path
-            else:
-                ckpt_dir = os.path.join(FLAGS.log_root, ckpt_dir)
+            ckpt_dir = FLAGS.pretrained_path
             ckpt_state = tf.train.get_checkpoint_state(ckpt_dir, latest_filename=latest_filename)
             logging.info('Loading checkpoint %s', ckpt_state.model_checkpoint_path)
             saver.restore(sess, ckpt_state.model_checkpoint_path)
@@ -60,10 +57,6 @@ def create_dirs(dir):
 
 def flatten_list_of_lists(list_of_lists):
     return list(itertools.chain.from_iterable(list_of_lists))
-
-def chunk_tokens(tokens, chunk_size):
-    chunk_size = max(1, chunk_size)
-    return (tokens[i:i+chunk_size] for i in xrange(0, len(tokens), chunk_size))
 
 def chunks(chunkable, n):
     """ Yield successive n-sized chunks from l.
@@ -177,72 +170,36 @@ def calc_ROUGE_L_score(candidate, reference, metric='f1'):
         raise Exception('Invalid metric argument: %s. Must be one of {f1,precision,recall}.' % metric)
     return score
 
-class Similarity_Functions:
-    '''
-    Class for computing sentence similarity between a set of source sentences and a set of summary sentences
-    
-    '''
-    @classmethod
-    def get_similarity(cls, enc_tokens, summ_tokens, similarity_fn, vocab):
-        if similarity_fn == 'ngram_similarity':
-            importances_hat = cls.ngram_similarity(enc_tokens, summ_tokens)
-        elif similarity_fn == 'rouge_l':
-            metric = 'precision'
-            summ_tokens_combined = flatten_list_of_lists(summ_tokens)
-            importances_hat = cls.rouge_l_similarity(enc_tokens, summ_tokens_combined, vocab, metric=metric)
-        return importances_hat
+'''
+Function for computing sentence similarity between a set of source sentences and a set of summary sentences
 
-    @classmethod
-    def rouge_l_similarity(cls, article_sents, abstract_sents, vocab, metric='f1'):
-        sentence_similarity = np.zeros([len(article_sents)], dtype=float)
-        abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
-        for article_sent_idx, article_sent in enumerate(article_sents):
-            rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
-            sentence_similarity[article_sent_idx] = rouge_l
-        return sentence_similarity
+'''
+def get_similarity(enc_tokens, summ_tokens, vocab):
+    metric = 'precision'
+    summ_tokens_combined = flatten_list_of_lists(summ_tokens)
+    importances_hat = rouge_l_similarity(enc_tokens, summ_tokens_combined, vocab, metric=metric)
+    return importances_hat
 
-    @classmethod
-    def rouge_l_similarity_matrix(cls, article_sents, abstract_sents, vocab, metric='f1'):
-        sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
-        abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
-        for article_sent_idx, article_sent in enumerate(article_sents):
-            rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
-            abs_similarities = []
-            for abstract_sent_idx, abstract_sent in enumerate(abstract_sents):
-                rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
-                abs_similarities.append(rouge_l)
-                sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
-        return sentence_similarity_matrix
+def rouge_l_similarity(article_sents, abstract_sents, vocab, metric='f1'):
+    sentence_similarity = np.zeros([len(article_sents)], dtype=float)
+    abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
+    for article_sent_idx, article_sent in enumerate(article_sents):
+        rouge_l = calc_ROUGE_L_score(article_sent, abstract_sents_removed_periods, metric=metric)
+        sentence_similarity[article_sent_idx] = rouge_l
+    return sentence_similarity
 
+def rouge_l_similarity_matrix(article_sents, abstract_sents, vocab, metric='f1'):
+    sentence_similarity_matrix = np.zeros([len(article_sents), len(abstract_sents)], dtype=float)
+    abstract_sents_removed_periods = remove_period_ids(abstract_sents, vocab)
+    for article_sent_idx, article_sent in enumerate(article_sents):
+        abs_similarities = []
+        for abstract_sent_idx, abstract_sent in enumerate(abstract_sents_removed_periods):
+            rouge_l = calc_ROUGE_L_score(article_sent, abstract_sent, metric=metric)
+            abs_similarities.append(rouge_l)
+            sentence_similarity_matrix[article_sent_idx, abstract_sent_idx] = rouge_l
+    return sentence_similarity_matrix
 
-    @classmethod
-    def ngram_similarity(cls, article_sents, abstract_sents):
-        abstracts_ngrams = [get_nGram(sent) for sent in abstract_sents]  # collect ngrams
-        abstracts_ngrams = sum(abstracts_ngrams, [])  # combine ngrams in all sentences
-        abstracts_ngrams = list(set(abstracts_ngrams))  # only unique ngrams
-        res = np.zeros((len(article_sents)), dtype=float)
-        for art_idx, art_sent in enumerate(article_sents):
-            article_ngrams = get_nGram(art_sent)
-            num_appear_in_source = sum([1 for ngram in article_ngrams if ngram in abstracts_ngrams])
-            if len(article_ngrams) == 0:
-                percent_appear_in_source = 0.
-            else:
-                percent_appear_in_source = num_appear_in_source * 1. / len(article_ngrams)
-            res[art_idx] = percent_appear_in_source
-        return res
-
-    @classmethod
-    def tokenwise_sentence_similarity(cls, enc_words_embs_list, summ_words_embs_list):
-        sentence_similarity_matrix = np.zeros([len(enc_words_embs_list), len(summ_words_embs_list)], dtype=float)
-        for enc_sent_idx, enc_sent in enumerate(enc_words_embs_list):
-            for summ_sent_idx, summ_sent in enumerate(summ_words_embs_list):
-                similarity_matrix = cosine_similarity(enc_sent, summ_sent)
-                pair_similarity = np.sum(similarity_matrix) / np.size(similarity_matrix)
-                pair_similarity = max(0, pair_similarity)  # don't allow negative values
-                sentence_similarity_matrix[enc_sent_idx, summ_sent_idx] = pair_similarity
-        return sentence_similarity_matrix
-
-
+tokenizer = Tokenizer('english')
 
 
 

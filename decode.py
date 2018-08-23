@@ -27,10 +27,7 @@ import json
 import pyrouge
 import util
 from sumy.nlp.tokenizers import Tokenizer
-import numpy as np
-import itertools
 from tqdm import tqdm
-import warnings
 from absl import flags
 from absl import logging
 import logging as log
@@ -130,8 +127,8 @@ class BeamSearchDecoder(object):
             decoded_output = ' '.join(decoded_words) # single string
 
             if FLAGS.single_pass:
-                self.write_for_rouge(all_original_abstract_sents, decoded_words, counter, doc_name=doc_name) # write ref summary and decoded summary to file, to eval with pyrouge later
-                self.write_for_attnvis(article_withunks, abstract_withunks, decoded_words, best_hyp.attn_dists, best_hyp.p_gens) # write info to .json file for visualization tool
+                self.write_for_rouge(all_original_abstract_sents, decoded_words, counter) # write ref summary and decoded summary to file, to eval with pyrouge later
+                # self.write_for_attnvis(article_withunks, abstract_withunks, decoded_words, best_hyp.attn_dists, best_hyp.p_gens) # write info to .json file for visualization tool
                 counter += 1 # this is how many examples we've decoded
             else:
                 print_results(article_withunks, abstract_withunks, decoded_output) # log output to screen
@@ -144,7 +141,7 @@ class BeamSearchDecoder(object):
                     _ = util.load_ckpt(self._saver, self._sess)
                     t0 = time.time()
 
-    def write_for_rouge(self, all_reference_sents, decoded_words, ex_index, doc_name=None):
+    def write_for_rouge(self, all_reference_sents, decoded_words, ex_index):
         """Write output to file in correct format for eval with pyrouge. This is called in single_pass mode.
 
         Args:
@@ -169,10 +166,7 @@ class BeamSearchDecoder(object):
         all_reference_sents = [[make_html_safe(w) for w in abstract] for abstract in all_reference_sents]
 
         # Write to file
-        if doc_name is not None:
-            decoded_file = os.path.join(self._rouge_dec_dir, doc_name)      # Only for UPitt
-        else:
-            decoded_file = os.path.join(self._rouge_dec_dir, "%06d_decoded.txt" % ex_index)
+        decoded_file = os.path.join(self._rouge_dec_dir, "%06d_decoded.txt" % ex_index)
 
         for abs_idx, abs in enumerate(all_reference_sents):
             ref_file = os.path.join(self._rouge_ref_dir, "%06d_reference.%s.txt" % (
@@ -264,11 +258,6 @@ class BeamSearchDecoder(object):
                 enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
 
                 sent_representations_separate = importance_features.get_separate_enc_states(self._model, self._sess, enc_sentences, self._vocab, hps)
-                # enc_sentences, enc_tokens, enc_sent_indices = importance_features.get_enc_sents_and_tokens_with_cutoff_length(
-                #     batch.enc_batch_extend_vocab[batch_idx], tokenizer, art_oovs, self._vocab, batch.doc_indices[batch_idx],
-                #     True, FLAGS.chunk_size)
-                # if enc_sentences is None and enc_tokens is None:    # indicates there was a problem getting the sentences
-                #     continue
 
                 sent_indices = enc_sent_indices
                 sent_reps = importance_features.get_importance_features_for_article(
@@ -284,9 +273,6 @@ class BeamSearchDecoder(object):
                     if FLAGS.importance_fn == 'svr':
                         instances.append(rep)
                         sentences.append(sentences)
-                # for inst in x_y
-                # self.write_for_rouge
-                # print 'Example %d features processed' % counter
                         counter += 1 # this is how many examples we've decoded
             doc_counter += len(batch_enc_states)
             pbar.update(len(batch_enc_states))

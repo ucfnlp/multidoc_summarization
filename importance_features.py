@@ -4,6 +4,10 @@ import util, data
 from sklearn.metrics.pairwise import cosine_similarity
 import batcher
 from absl import flags
+from sklearn import svm
+import glob
+import tqdm
+import cPickle
 
 FLAGS = flags.FLAGS
 
@@ -103,11 +107,8 @@ def get_sent_lens(enc_sentences):
 
 def get_ROUGE_Ls(art_oovs, all_original_abstracts_sents, vocab, enc_tokens):
     human_tokens = get_tokens_for_human_summaries(art_oovs, all_original_abstracts_sents, vocab, split_sents=False)  # list (of 4 human summaries) of list of token ids
-    # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
     metric = 'recall'
-    # similarity_matrix = util.Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, metric=metric)
-    # importances_hat = np.sum(similarity_matrix, 1)
-    importances_hat = util.Similarity_Functions.rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
+    importances_hat = util.rouge_l_similarity(enc_tokens, human_tokens, vocab, metric=metric)
     importances = util.special_squash(importances_hat)
     return importances, importances_hat
 
@@ -116,9 +117,8 @@ def get_best_ROUGE_L_for_each_abs_sent(art_oovs, all_original_abstracts_sents, v
     if len(human_tokens) > 1:
         raise Exception('human_tokens (len %d) should have 1 entry, because cnn/dm has one abstract per article.' % len(human_tokens))
     human_tokens = human_tokens[0]
-    # human_sents, human_tokens = get_summ_sents_and_tokens(human_tokens, tokenizer, batch, vocab, FLAGS.chunk_size)
     metric = 'recall'
-    similarity_matrix = util.Similarity_Functions.rouge_l_similarity_matrix(enc_tokens, human_tokens, vocab, metric=metric)
+    similarity_matrix = util.rouge_l_similarity_matrix(enc_tokens, human_tokens, vocab, metric=metric)
     best_indices = []
     for col_idx in range(similarity_matrix.shape[1]):
         col = similarity_matrix[:,col_idx]
@@ -173,10 +173,6 @@ def tokens_to_continuous_text(tokens, vocab, art_oovs):
 
     return text
 
-def chunk_tokens(tokens, chunk_size):
-    chunk_size = max(1, chunk_size)
-    return (tokens[i:i+chunk_size] for i in xrange(0, len(tokens), chunk_size))
-
 def get_sentence_splits(enc_sentences):
     '''Returns a list of indices, representing the word index for the first word of each sentence'''
     cur_idx = 0
@@ -216,3 +212,31 @@ def get_separate_enc_states(model, sess, enc_sentences, vocab, hps):
             reps.append(rep)
     reps = reps[:len(enc_sentences)]                        # Removes the filler examples
     return reps
+
+def run_training(x, y):
+    print "Starting SVR training"
+    if FLAGS.importance_fn == 'svr':
+        clf = svm.SVR()
+
+    clf.fit(x, y)
+    return clf
+
+def load_data(data_path, num_instances):
+    print 'Loading SVR data'
+    filelist = glob.glob(data_path) # get the list of datafiles
+    assert filelist, ('Error: Empty filelist at %s' % data_path) # check filelist isn't empty
+    filelist = sorted(filelist)
+    instances = []
+    for file_name in tqdm(filelist):
+        with open(file_name) as f:
+            examples = cPickle.load(f)
+        if num_instances == -1:
+            num_instances = np.inf
+        remaining_number = num_instances - sum([len(b) for b in instances])
+        if len(examples) < remaining_number:
+            instances.extend(examples)
+        else:
+            instances.extend(examples[:remaining_number])
+            break
+    print 'Finished loading data. Number of instances=%d' % len(instances)
+    return instances

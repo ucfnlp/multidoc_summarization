@@ -21,13 +21,11 @@ from random import shuffle
 from threading import Thread
 import time
 import numpy as np
-import tensorflow as tf
 import data
 import nltk
-from write_data import process_sent
+from convert_data import process_sent
 import util
 from absl import logging
-import random
 
 
 class Example(object):
@@ -323,7 +321,8 @@ class Batcher(object):
     def fill_example_queue(self):
         """Reads data from file and processes into Examples which are then placed into the example queue."""
 
-        input_gen = self.text_generator(data.example_generator(self._data_path, self._single_pass, self._cnn_500_dm_500))
+        input_gen = self.text_generator(
+            data.example_generator(self._data_path, self._single_pass, self._cnn_500_dm_500))
         # counter = 0
         while True:
             try:
