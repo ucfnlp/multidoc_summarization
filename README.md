@@ -1,4 +1,4 @@
-# Structure-Infused Copy Mechanisms for Abstractive Summarization
+# Adapting the Neural Encoder-Decoder Framework from Single to Multi-Document Summarization
 
 We provide the source code for the paper **"[Adapting the Neural Encoder-Decoder Framework from Single to Multi-Document Summarization](https://arxiv.org/abs/1808.06218)"**, accepted at EMNLP'18. If you find the code useful, please cite the following paper. 
 
