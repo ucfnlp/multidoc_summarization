@@ -1,5 +1,6 @@
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 # Modifications Copyright 2017 Abigail See
+# Modifications made 2018 by Logan Lebanoff
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -88,24 +89,17 @@ class BeamSearchDecoder(object):
         t0 = time.time()
         counter = 0
         while True:
-            # results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-            # print("Results_dict: ", results_dict)
             batch = self._batcher.next_batch()	# 1 example repeated across batch
-            # if counter != 21:
-            #     counter += 1
-            #     continue
             if batch is None: # finished decoding dataset in single_pass mode
                 assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
                 logging.info("Decoder has finished reading dataset for single_pass.")
                 logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
                 results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-                # print("Results_dict: ", results_dict)
                 rouge_log(results_dict, self._decode_dir)
                 return
 
             original_article = batch.original_articles[0]	# string
             original_abstract = batch.original_abstracts[0]	# string
-            original_abstract_sents = batch.original_abstracts_sents[0]	# list of strings
             all_original_abstract_sents = batch.all_original_abstracts_sents[0]
 
             article_withunks = data.show_art_oovs(original_article, self._vocab) # string
@@ -305,7 +299,7 @@ def rouge_eval(ref_dir, dec_dir):
     r.model_dir = ref_dir
     r.system_dir = dec_dir
     log.getLogger('global').setLevel(log.WARNING) # silence pyrouge logging
-    rouge_args = ['-e', '/home/logan/ROUGE/RELEASE-1.5.5/data',
+    rouge_args = ['-e', r._data_dir,
          '-c',
          '95',
          '-2', '4',        # This is the only one we changed (changed the max skip from -1 to 4)
@@ -342,19 +336,6 @@ def rouge_log(results_dict, dir_to_write):
     logging.info("Writing final ROUGE results to %s...", results_file)
     with open(results_file, "w") as f:
         f.write(log_str)
-
-    print "\nROUGE-1, ROUGE-2, ROUGE-SU4 (PRF):\n"
-    sheets_str = ""
-    for x in ["1", "2", "su4"]:
-        for y in ["precision", "recall", "f_score"]:
-            key = "rouge_%s_%s" % (x, y)
-            val = results_dict[key]
-            sheets_str += "%.4f\t" % (val)
-    sheets_str += "\n"
-    print sheets_str
-    sheets_results_file = os.path.join(dir_to_write, "sheets_results.txt")
-    with open(sheets_results_file, "w") as f:
-        f.write(sheets_str)
 
 
 def get_decode_dir_name(ckpt_name):

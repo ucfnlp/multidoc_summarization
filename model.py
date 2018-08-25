@@ -1,5 +1,6 @@
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 # Modifications Copyright 2017 Abigail See
+# Modifications made 2018 by Logan Lebanoff
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -221,7 +222,7 @@ class SummarizationModel(object):
                 emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
 
             if hps.mode == "decode" and hps.coverage:
-                # Add embedder (for Logan's coverage)
+                # Add embedder
                 self.token_embeddings = tf.nn.embedding_lookup(embedding, self.token_inputs)
 
             # Add the encoder.

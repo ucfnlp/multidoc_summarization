@@ -1,5 +1,6 @@
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 # Modifications Copyright 2017 Abigail See
+# Modifications made 2018 by Logan Lebanoff
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,12 +22,11 @@ import time
 import os
 import numpy as np
 from absl import flags
-FLAGS = flags.FLAGS
 import itertools
-from matplotlib import pyplot as plt
 import data
 from absl import logging
 from sumy.nlp.tokenizers import Tokenizer
+FLAGS = flags.FLAGS
 
 def get_config():
     """Returns config for tf.session"""
@@ -39,7 +39,7 @@ def load_ckpt(saver, sess, ckpt_dir="train"):
     while True:
         try:
             latest_filename = "checkpoint_best" if ckpt_dir=="eval" else None
-            ckpt_dir = FLAGS.pretrained_path
+            ckpt_dir = os.path.join(FLAGS.pretrained_path, 'train')
             ckpt_state = tf.train.get_checkpoint_state(ckpt_dir, latest_filename=latest_filename)
             logging.info('Loading checkpoint %s', ckpt_state.model_checkpoint_path)
             saver.restore(sess, ckpt_state.model_checkpoint_path)
@@ -47,13 +47,6 @@ def load_ckpt(saver, sess, ckpt_dir="train"):
         except:
             logging.info("Failed to load checkpoint from %s. Sleeping for %i secs...", ckpt_dir, 10)
             time.sleep(10)
-
-class InfinityValueError(ValueError): pass
-
-
-def create_dirs(dir):
-    if not os.path.exists(dir):
-        os.makedirs(dir)
 
 def flatten_list_of_lists(list_of_lists):
     return list(itertools.chain.from_iterable(list_of_lists))
@@ -65,10 +58,6 @@ def chunks(chunkable, n):
     for i in xrange(0, len(chunkable), n):
         chunk_list.append( chunkable[i:i+n])
     return chunk_list
-
-def plot_bar_graph(values):
-    plt.figure()
-    plt.bar(np.arange(len(values)), values)
 
 def is_list_type(obj):
     return isinstance(obj, (list, tuple, np.ndarray))
@@ -87,9 +76,6 @@ def to_unicode(text):
     except TypeError:
         return text
     return text
-
-def reorder(l, ordering):
-    return [l[i] for i in ordering]
 
 def special_squash(distribution):
     res = distribution - np.min(distribution)
@@ -123,11 +109,6 @@ def my_lcs(string, sub):
 
     return lengths[len(string)][len(sub)]
 
-
-def get_nGram(l, n=2):
-    l = list(l)
-    return list(set(zip(*[l[i:] for i in range(n)])))
-
 def calc_ROUGE_L_score(candidate, reference, metric='f1'):
     """
     Compute ROUGE-L score given one candidate and references for an image
@@ -135,8 +116,6 @@ def calc_ROUGE_L_score(candidate, reference, metric='f1'):
     :param refs: list of str : COCO reference sentences for the particular image to be evaluated
     :returns score: int (ROUGE-L score for the candidate evaluated against references)
     """
-    # assert (len(candidate) == 1)
-    # assert (len(refs) > 0)
     beta = 1.2
     prec = []
     rec = []
@@ -171,7 +150,7 @@ def calc_ROUGE_L_score(candidate, reference, metric='f1'):
     return score
 
 '''
-Function for computing sentence similarity between a set of source sentences and a set of summary sentences
+Functions for computing sentence similarity between a set of source sentences and a set of summary sentences
 
 '''
 def get_similarity(enc_tokens, summ_tokens, vocab):
