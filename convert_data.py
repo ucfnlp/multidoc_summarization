@@ -246,22 +246,25 @@ def get_custom_article_abstract(multidoc_dirname, article_dir):
     for doc_idx, sentences in enumerate(docs):
         article, raw_article_sents, doc_indices = add_sents_to_article(sentences, article, raw_article_sents, doc_indices, doc_idx)
     article = article.encode('utf-8').strip()
-    abstracts_unprocessed = [[sent.strip() for sent in abs.strip().split('\n')] for abs in text.split('<SUMMARIES>')[1].strip().split('\n\n')]
-    abstracts = []
-    for abstract_lines in abstracts_unprocessed:
-        abstract = process_abstract(abstract_lines)
-        abstracts.append(abstract)
+    if '<SUMMARIES>' in text:
+        abstracts_unprocessed = [[sent.strip() for sent in abs.strip().split('\n')] for abs in text.split('<SUMMARIES>')[1].strip().split('\n\n')]
+        abstracts = []
+        for abstract_lines in abstracts_unprocessed:
+            abstract = process_abstract(abstract_lines)
+            abstracts.append(abstract)
+    else:
+        abstracts = []
     return article, abstracts, doc_indices, raw_article_sents
 
 def main(unused_argv):
     if len(unused_argv) != 1: # prints a message if you've entered flags incorrectly
         raise Exception("Problem with flags: %s" % unused_argv)
-    if FLAGS.dataset == '':
+    if FLAGS.dataset_name == '':
         raise Exception('Must specify which dataset to convert.')
-    process_dataset(FLAGS.dataset, FLAGS.out_data_path, FLAGS.TAC_path, FLAGS.DUC_path, FLAGS.custom_dataset_path)
+    process_dataset(FLAGS.dataset_name, FLAGS.out_data_path, FLAGS.TAC_path, FLAGS.DUC_path, FLAGS.custom_dataset_path)
     
 if __name__ == '__main__':
-    flags.DEFINE_string('dataset', 'example_custom_dataset', 'Which dataset to convert from raw data to tf examples')
+    flags.DEFINE_string('dataset_name', 'example_custom_dataset', 'Which dataset to convert from raw data to tf examples')
     flags.DEFINE_string('out_data_path', 'tf_data', 'Where to put output tf examples')
     flags.DEFINE_string('TAC_path', '', 'Path to raw TAC data.')
     flags.DEFINE_string('DUC_path', '', 'Path to raw DUC data.')

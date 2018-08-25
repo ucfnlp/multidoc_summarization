@@ -339,11 +339,12 @@ class Batcher(object):
                 else:
                     raise Exception("single_pass mode is off but the example generator is out of data; error.")
 
-            # abstract_sentences = [sent.strip() for sent in data.abstract2sents(
-            #     abstracts[0])]  # Use the <s> and </s> tags in abstract to get a list of sentences.
             all_abstract_sentences = [[sent.strip() for sent in data.abstract2sents(
                 abstract)] for abstract in abstracts]
-            abstract_sentences = all_abstract_sentences[0]
+            if len(all_abstract_sentences) != 0:
+                abstract_sentences = all_abstract_sentences[0]
+            else:
+                abstract_sentences = []
             doc_indices = [int(idx) for idx in doc_indices_str.strip().split()]
             example = Example(article, abstract_sentences, all_abstract_sentences, doc_indices, raw_article_sents, self._vocab, self._hps)  # Process into an Example.
             self._example_queue.put(example)  # place the Example in the example queue.

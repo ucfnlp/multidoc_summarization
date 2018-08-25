@@ -50,7 +50,7 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
 
 4. Run the testing script. The summary files, located in the `./logs/example_custom_dataset/` directory.
     ```
-    $ python run_summarization.py --dataset=example_custom_dataset
+    $ python run_summarization.py --dataset_name=example_custom_dataset
     ```
 
 ## License
