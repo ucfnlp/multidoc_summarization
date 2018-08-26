@@ -35,7 +35,7 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
     $ mv pretrained_model_tf1.2.1.zip multidoc_summarization/logs
     $ cd multidoc_summarization/logs
     $ unzip pretrained_model_tf1.2.1.zip
-    $ rm pretrained_model_tf1.2.1
+    $ rm pretrained_model_tf1.2.1.zip
     $ cd ..
     ```
 
@@ -59,5 +59,5 @@ This project is licensed under the BSD License - see the [LICENSE.md](LICENSE.md
 
 ## Acknowledgments
 
-We grateful acknowledge the work of Abigail See whose [code](https://github.com/abisee/pointer-generator) was used as a basis for this project.
+We gratefully acknowledge the work of Abigail See whose [code](https://github.com/abisee/pointer-generator) was used as a basis for this project.
 
