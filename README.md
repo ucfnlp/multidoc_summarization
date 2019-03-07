@@ -48,9 +48,9 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
     $ python convert_data.py --dataset=example_custom_dataset --custom_dataset_path=./example_custom_dataset/
     ```
 
-4. Run the testing script. The summary files, located in the `./logs/example_custom_dataset/` directory.
+4. Run the testing script. The summary files are located in the `./logs/example_custom_dataset/` directory.
     ```
-    $ python run_summarization.py --dataset_name=example_custom_dataset
+    $ python run_summarization.py --dataset_name=example_custom_dataset --pg_mmr
     ```
 
 ## License

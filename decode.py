@@ -179,7 +179,7 @@ class BeamSearchDecoder(object):
         logging.info("Wrote example %i to file" % ex_index)
 
 
-    def write_for_attnvis(self, article, abstract, decoded_words, attn_dists, p_gens):
+    def write_for_attnvis(self, article, abstract, decoded_words, attn_dists, p_gens, ex_index=None):
         """Write some data to json file, which can be read into the in-browser attention visualizer tool:
             https://github.com/abisee/attn_vis
 
@@ -200,7 +200,10 @@ class BeamSearchDecoder(object):
         }
         if FLAGS.pointer_gen:
             to_write['p_gens'] = p_gens
-        output_fname = os.path.join(self._decode_dir, 'attn_vis_data.json')
+        if ex_index is None:
+            output_fname = os.path.join(self._decode_dir, 'attn_vis', 'attn_vis_data.json')
+        else:
+            output_fname = os.path.join(self._decode_dir, 'attn_vis', 'attn_vis_data%06d.json' % ex_index)
         with open(output_fname, 'w') as output_file:
             json.dump(to_write, output_file)
         logging.info('Wrote visualization data to %s', output_fname)
