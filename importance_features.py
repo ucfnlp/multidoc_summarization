@@ -6,7 +6,7 @@ import batcher
 from absl import flags
 from sklearn import svm
 import glob
-import tqdm
+from tqdm import tqdm
 import cPickle
 
 FLAGS = flags.FLAGS
@@ -39,7 +39,7 @@ def get_features_list(include_y):
 
     return features
 
-def get_importance_features_for_article(enc_states, enc_sentences, sent_indices, tokenizer, sent_representations_separate):
+def get_importance_features_for_article(enc_states, enc_sentences, sent_indices, sent_representations_separate):
     abs_sent_indices = sent_indices
     rel_sent_indices_0_to_10 = get_relative_sent_indices(sent_indices)
     sent_lens = get_sent_lens(enc_sentences)

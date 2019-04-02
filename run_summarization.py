@@ -188,8 +188,8 @@ def main(unused_argv):
                     print('No importance_feature instances found at %s so creating it from raw data.' % save_path)
                     decode_model_hps = hps._replace(
                         max_dec_steps=1, batch_size=100, mode='calc_features')  # The model is configured with max_dec_steps=1 because we only ever run one step of the decoder at a time (to do beam search). Note that the batcher is initialized with max_dec_steps equal to e.g. 100 because the batches need to contain the full summaries
-                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, 'cnn_500_dm_500', dataset_split + '*')
-                    batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass, cnn_500_dm_500=True)
+                    cnn_dm_train_data_path = os.path.join(FLAGS.data_root, FLAGS.dataset_name, dataset_split + '*')
+                    batcher = Batcher(cnn_dm_train_data_path, vocab, decode_model_hps, single_pass=FLAGS.single_pass, cnn_500_dm_500=False)
                     calc_features(cnn_dm_train_data_path, decode_model_hps, vocab, batcher, save_path)
 
                 print('No importance_feature SVR model found at %s so training it now.' % importance_model_path)
