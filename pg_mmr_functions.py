@@ -13,10 +13,6 @@ import data
 from absl import flags
 from sklearn.metrics.pairwise import cosine_similarity
 import cPickle
-import matplotlib
-if not "DISPLAY" in os.environ:
-    matplotlib.use("Agg")
-from matplotlib import pyplot as plt
 
 FLAGS = flags.FLAGS
 
@@ -45,99 +41,6 @@ def convert_to_word_level(mmr_for_sentences, batch, enc_tokens):
         mmr[word_idx:word_idx + len(mmr_for_words)] = mmr_for_words
         word_idx += len(mmr_for_words)
     return mmr
-
-def plot_importances(article_sents, importances, abstracts_text, save_location=None, save_name=None):
-    plt.ioff()
-    sents_per_figure = 40
-    max_importance = np.max(importances)
-    chunked_sents = util.chunks(article_sents, sents_per_figure)
-    chunked_importances = util.chunks(importances, sents_per_figure)
-
-    for chunk_idx in range(len(chunked_sents)):
-        my_article_sents = chunked_sents[chunk_idx]
-        my_importances = chunked_importances[chunk_idx]
-
-        if len(my_article_sents) < sents_per_figure:
-            my_article_sents += [''] * (sents_per_figure-len(my_article_sents))
-            my_importances = np.concatenate([my_importances, np.zeros([sents_per_figure-len(my_importances)])])
-
-        y_pos = np.arange(len(my_article_sents))
-        fig, ax1 = plt.subplots()
-        fig.subplots_adjust(left=0.9, top=1.0, bottom=0.03, right=1.0)
-        ax1.barh(y_pos, my_importances, align='center',
-                 color='green', ecolor='black')
-        ax1.set_yticks(y_pos)
-        ax1.set_yticklabels(my_article_sents)
-        ax1.invert_yaxis()  # labels read top-to-bottom
-        ax1.set_xlabel('Performance')
-        ax1.set_title('How fast do you want to go today?')
-        ax1.set_xlim(right=max_importance)
-
-        fig.set_size_inches(18.5, 10.5)
-        plt.savefig(os.path.join(save_location, save_name + '_' + str(chunk_idx) + '.jpg'))
-        plt.close(fig)
-
-    plt.figure()
-    fig_txt = tw.fill(tw.dedent(abstracts_text), width=80)
-    plt.figtext(0.5, 0.5, fig_txt, horizontalalignment='center',
-                fontsize=9, multialignment='left',
-                bbox=dict(boxstyle="round", facecolor='#D8D8D8',
-                          ec="0.5", pad=0.5, alpha=1), fontweight='bold')
-    fig = plt.gcf()
-    fig.set_size_inches(18.5, 10.5)
-    plt.savefig(os.path.join(save_location, save_name + '_' + str(chunk_idx+1) + '.jpg'))
-    plt.close(fig)
-
-def save_distribution_plots(importances, enc_sentences,
-                                   enc_tokens, hyp, batch, vocab, ex_index, sort=True):
-    enc_sentences_str = [' '.join(sent) for sent in enc_sentences]
-    summ_sents, summ_tokens = get_summ_sents_and_tokens(hyp.tokens, batch, vocab)
-    prev_mmr = importances
-
-    if sort:
-        sort_order = np.argsort(importances, 0)[::-1]
-
-    for sent_idx in range(0, len(summ_sents)):
-        cur_summ_sents = summ_sents[:sent_idx]
-        cur_summ_tokens = summ_tokens[:sent_idx]
-        summ_str = ' '.join([' '.join(sent) for sent in cur_summ_sents])
-        similarity_amount = get_similarity(enc_tokens, cur_summ_tokens, vocab)
-
-        if FLAGS.pg_mmr:
-            mmr_for_sentences = calc_mmr_from_sim_and_imp(similarity_amount, importances)
-        else:
-            mmr_for_sentences = None  # Don't use mmr if no sentence-level option is used
-
-        distr_dir = os.path.join(FLAGS.log_root, 'mmr_distributions')
-        if not os.path.exists(distr_dir):
-            os.makedirs(distr_dir)
-        save_name = os.path.join("%06d_decoded_%s_%d_sent" % (ex_index, '', sent_idx))
-        plot_importances(enc_sentences_str, distribution, summ_str, save_location=distr_dir, save_name=save_name)
-        file_path = os.path.join(distr_dir, save_name)
-        np.savez(file_path, mmr=mmr_for_sentences, importances=importances, enc_sentences=enc_sentences, summ_str=summ_str)
-        distributions = [('similarity', similarity_amount),
-                         ('importance', importances),
-                         ('mmr', mmr_for_sentences)]
-        for distr_str, distribution in distributions:
-            if sort:
-                distribution = distribution[sort_order]
-            save_name = os.path.join("%06d_decoded_%s_%d_sent" % (ex_index, distr_str, sent_idx))
-
-            img_file_names = sorted([file_name for file_name in os.listdir(distr_dir)
-                                     if save_name in file_name and 'jpg' in file_name
-                                     and 'combined' not in file_name])
-            imgs = []
-            for file_name in img_file_names:
-                img = PIL.Image.open(os.path.join(distr_dir, file_name))
-                imgs.append(img)
-            max_shape = sorted([(np.sum(i.size), i.size) for i in imgs])[-1][1]
-            combined_img = np.vstack( (np.asarray( i.resize(max_shape) ) for i in imgs ) )
-            combined_img = PIL.Image.fromarray(combined_img)
-            combined_img.save(os.path.join(distr_dir, save_name+'_combined.jpg'))
-            for file_name in img_file_names:
-                os.remove(os.path.join(distr_dir, file_name))
-        prev_mmr = mmr_for_sentences
-    return mmr_for_sentences
 
 def calc_mmr_from_sim_and_imp(similarity, importances):
     new_mmr =  FLAGS.lambda_val*importances - (1-FLAGS.lambda_val)*similarity
