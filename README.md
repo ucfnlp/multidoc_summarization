@@ -48,7 +48,7 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
     $ python convert_data.py --dataset_name=example_custom_dataset --custom_dataset_path=./example_custom_dataset/
     ```
 
-4. Run the testing script. The summary files are located in the `./logs/example_custom_dataset/` directory.
+4. Run the testing script. This will create a file called `logs/tfidf_vectorizer/example_custom_dataset.dill`. If you change the contents of your dataset, you should delete this file so that the script will re-create the TF-IDF vectorizer which reflects the changes. The summary files are located in the `./logs/example_custom_dataset/decoded/` directory.
     ```
     $ python run_summarization.py --dataset_name=example_custom_dataset --pg_mmr
     ```
