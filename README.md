@@ -45,7 +45,7 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
 
 3. Convert your data to TensorFlow examples that can be fed to the PG-MMR model.
     ```
-    $ python convert_data.py --dataset=example_custom_dataset --custom_dataset_path=./example_custom_dataset/
+    $ python convert_data.py --dataset_name=example_custom_dataset --custom_dataset_path=./example_custom_dataset/
     ```
 
 4. Run the testing script. The summary files are located in the `./logs/example_custom_dataset/` directory.
