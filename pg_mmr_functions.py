@@ -1,5 +1,3 @@
-import textwrap as tw
-import PIL
 import itertools
 import util
 from util import get_similarity, rouge_l_similarity
