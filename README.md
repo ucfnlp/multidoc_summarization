@@ -24,7 +24,12 @@ The code is written in Python (v2.7) and TensorFlow (v1.4.1). We suggest the fol
 * [Python (v2.7)](https://www.anaconda.com/download/)
 * [TensorFlow (v1.4.1)](https://www.tensorflow.org/install/)
 * [Pyrouge](https://pypi.org/project/pyrouge/)
-* [NLTK](https://www.nltk.org/install.html)
+* [NLTK](https://www.nltk.org/install.html) == 3.4.5
+* bs4
+* absl-py
+* sumy
+* scikit-learn
+* dill
 
 
 ## How to Generate Summaries
